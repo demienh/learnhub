@@ -1,0 +1,12 @@
+{
+  "format": "abwl-lernraum-fortschritt",
+  "version": 2,
+  "exportedAt": "2026-10-22T06:55:14.059Z",
+  "progress": {
+    "knownIds": [],
+    "wrongIds": [],
+    "correctAnswers": 0,
+    "incorrectAnswers": 0,
+    "reviews": {}
+  }
+}

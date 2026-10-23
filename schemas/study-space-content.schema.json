@@ -1,0 +1,227 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "study-space-content.schema.json",
+  "title": "Study Space external content package",
+  "description": "Versioned package for source-backed study material created outside the app. File and page references do not require a PDF to be uploaded or analyzed in the app.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "version", "chapters", "items"],
+  "properties": {
+    "format": {
+      "const": "study-space-content"
+    },
+    "version": {
+      "const": 1
+    },
+    "courseId": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Optional target course ID. When present, it must match the selected course."
+    },
+    "chapters": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/chapter"
+      }
+    },
+    "items": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/item"
+      }
+    }
+  },
+  "$defs": {
+    "section": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "chapter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sections": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/section"
+          }
+        }
+      }
+    },
+    "sourceByMaterialId": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["materialId", "page"],
+      "properties": {
+        "materialId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fileName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "page": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "sourceByFileName": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fileName", "page"],
+      "properties": {
+        "fileName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "page": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "commonItem": {
+      "type": "object",
+      "required": ["id", "kind", "prompt", "chapterId", "source"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": ["flashcard", "quiz"]
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "answer": {
+          "type": "string"
+        },
+        "options": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "correctOption": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "explanation": {
+          "type": "string"
+        },
+        "shortExplanation": {
+          "type": "string"
+        },
+        "keyTerms": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "examples": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "chapterId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sectionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "questionType": {
+          "type": "string",
+          "minLength": 1
+        },
+        "uncertain": {
+          "type": "boolean"
+        },
+        "source": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/sourceByMaterialId"
+            },
+            {
+              "$ref": "#/$defs/sourceByFileName"
+            }
+          ]
+        }
+      }
+    },
+    "flashcard": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/commonItem"
+        },
+        {
+          "type": "object",
+          "required": ["answer"],
+          "properties": {
+            "kind": {
+              "const": "flashcard"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "quiz": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/commonItem"
+        },
+        {
+          "type": "object",
+          "required": ["options", "correctOption"],
+          "properties": {
+            "kind": {
+              "const": "quiz"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "item": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/flashcard"
+        },
+        {
+          "$ref": "#/$defs/quiz"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,74 @@
+{
+  "source": {
+    "path": "./materials/ABWL.pdf",
+    "available": false,
+    "note": "Die erwartete PDF wurde nicht gefunden. Es werden deshalb keine fachlichen Inhalte angezeigt."
+  },
+  "chapters": [
+    { "number": 1, "title": "Kapitel 1" },
+    { "number": 2, "title": "Kapitel 2" },
+    { "number": 3, "title": "Kapitel 3" },
+    { "number": 4, "title": "Kapitel 4" },
+    { "number": 5, "title": "Kapitel 5" },
+    { "number": 6, "title": "Kapitel 6" },
+    { "number": 7, "title": "Kapitel 7" },
+    { "number": 8, "title": "Kapitel 8" },
+    { "number": 9, "title": "Kapitel 9" }
+  ],
+  "transferTask": {
+    "title": "Nutzwertanalyse – Transferfrage",
+    "sourceSlide": 45,
+    "verification": "unverified",
+    "note": "Von dir vorgegebener, am Original noch ungeprüfter Hinweis: Laut deiner Beschreibung nennt Folie 45 Alternative C. Bei genau 3.000 € Einsatz ist C die genannte Lösung; bei einer Budgetobergrenze von 3.000 € mit erlaubtem Restbudget erzielt F mehr Output. Diese Transferfrage ändert die Annahme ausdrücklich und ist keine bestätigte Wiedergabe der Folie."
+  },
+  "questions": [
+    {
+      "id": "karte-platzhalter-1",
+      "kind": "flashcard",
+      "prompt": "Lernkartenfrage aus der PDF ergänzen",
+      "answer": "Antwort anhand der PDF ergänzen und Seitenzahl eintragen.",
+      "chapter": "Nicht zugeordnet",
+      "questionType": "Nicht festgelegt",
+      "sourcePages": [],
+      "placeholder": true,
+      "uncertain": false
+    },
+    {
+      "id": "karte-platzhalter-2",
+      "kind": "flashcard",
+      "prompt": "Weitere Lernkartenfrage aus der PDF ergänzen",
+      "answer": "Antwort anhand der PDF ergänzen und Seitenzahl eintragen.",
+      "chapter": "Nicht zugeordnet",
+      "questionType": "Nicht festgelegt",
+      "sourcePages": [],
+      "placeholder": true,
+      "uncertain": false
+    },
+    {
+      "id": "quiz-platzhalter-1",
+      "kind": "quiz",
+      "prompt": "Multiple-Choice-Frage aus der PDF ergänzen",
+      "options": [],
+      "correctOption": null,
+      "explanation": "Begründung anhand der PDF ergänzen.",
+      "chapter": "Nicht zugeordnet",
+      "questionType": "Nicht festgelegt",
+      "sourcePages": [],
+      "placeholder": true,
+      "uncertain": false
+    },
+    {
+      "id": "quiz-platzhalter-2",
+      "kind": "quiz",
+      "prompt": "Weitere Multiple-Choice-Frage aus der PDF ergänzen",
+      "options": [],
+      "correctOption": null,
+      "explanation": "Begründung anhand der PDF ergänzen.",
+      "chapter": "Nicht zugeordnet",
+      "questionType": "Nicht festgelegt",
+      "sourcePages": [],
+      "placeholder": true,
+      "uncertain": false
+    }
+  ]
+}
