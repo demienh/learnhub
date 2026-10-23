@@ -46,6 +46,23 @@ test("error-list index advances when an unresolved item remains", () => {
   assert.equal(progress.nextReviewIndex(0, 1, false), 0);
 });
 
+test("topic attention separates repeated learning-session misses from exam results", () => {
+  const summary = progress.summarizeTopicAttention([
+    { type: "study", missedIds: ["repeat", "single"] },
+    { type: "study", missedIds: ["repeat"] },
+    { type: "exam", missedIds: ["single", "exam-only"] },
+  ], [
+    { questionId: "repeat", topicId: "chapter-a", markedForReview: false, confidentError: false },
+    { questionId: "single", topicId: "chapter-b", markedForReview: true, confidentError: true },
+    { questionId: "exam-only", topicId: "chapter-c", markedForReview: false, confidentError: false },
+  ]);
+
+  assert.deepEqual(summary, [
+    { topicId: "chapter-a", markedForReview: 0, repeatedMistakes: 1, confidentErrors: 0 },
+    { topicId: "chapter-b", markedForReview: 1, repeatedMistakes: 0, confidentErrors: 1 },
+  ]);
+});
+
 test("safe, early, incorrect, and overdue reviews preserve the calendar schedule", () => {
   const reviewedAt = new Date(2026, 9, 22, 12);
   const first = progress.scheduleReview(undefined, "sicher", reviewedAt);

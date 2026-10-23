@@ -31,6 +31,7 @@ import {
   parseProgressImport,
   reviewKey,
   scheduleReview,
+  summarizeTopicAttention,
   STORAGE_KEY,
   todayLocalDate,
   weeklyMonthlySummary,
@@ -721,6 +722,21 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
     return leftDate.localeCompare(rightDate) || left.question.prompt.localeCompare(right.question.prompt, "de");
   });
   const knownCount = usableQuestions.filter((question) => scheduleModes(question).some((mode) => isKnown(question, mode))).length;
+  const markedQuestionIds = new Set(uncertainItems.map((item) => item.question.id));
+  const confidentErrorIds = new Set(scheduledItems
+    .filter(({ record }) => record.confidence === "hoch" && record.rating !== "sicher")
+    .map(({ question }) => question.id));
+  const topicAttention = summarizeTopicAttention(
+    progress.history,
+    usableQuestions.map((question) => ({
+      questionId: question.id,
+      topicId: chapterIdForQuestion(question) ?? unassignedTopic,
+      markedForReview: markedQuestionIds.has(question.id),
+      confidentError: confidentErrorIds.has(question.id),
+    })),
+  );
+  const repeatedMistakeCount = topicAttention.reduce((total, topic) => total + topic.repeatedMistakes, 0);
+  const confidentErrorCount = topicAttention.reduce((total, topic) => total + topic.confidentErrors, 0);
   const masteredChapters = chapterCatalog.filter((chapter) => {
     const topicQuestions = usableQuestions.filter((question) => chapterIdForQuestion(question) === chapter.id);
     return topicQuestions.length > 0 && topicQuestions.every((question) =>
@@ -1650,7 +1666,6 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
                 const mastered = items.filter((question) =>
                   scheduleModes(question).some((mode) => isKnown(question, mode)),
                 ).length;
-                const percent = items.length ? Math.round(mastered / items.length * 100) : 0;
                 const sections = [...new Map(items.map((question) => [
                   sectionKeyForQuestion(question),
                   sectionLabelForQuestion(question),
@@ -1664,9 +1679,9 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
                     <h3>{chapter.title}</h3>
                     {items.length > 0 ? (
                       <>
-                        <p>{items.length} belegte Lernziele · {percent}% gefestigt</p>
+                        <p>{items.length} belegte Lernziele · {mastered} mehrfach sicher erinnert</p>
                         <div className="topic-progress" role="progressbar" aria-label={`${chapter.title}: ${mastered} von ${items.length} Lernzielen sicher`} aria-valuemin={0} aria-valuemax={items.length} aria-valuenow={mastered}>
-                          <span style={{ width: `${percent}%` }} />
+                          <span style={{ width: `${mastered / items.length * 100}%` }} />
                         </div>
                         <ul className="section-progress-list">
                           {sections.map(([sectionKey, sectionLabel]) => {
@@ -2111,6 +2126,46 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
               <article className="stat-card"><span>Später geplant</span><strong>{plannedCount}</strong><small>modusbezogene Wiederholungen</small></article>
               <article className="stat-card"><span>Unsicher / falsch</span><strong>{uncertainItems.length}</strong><small>in der Fehlerliste</small></article>
             </section>
+            <section className="next-step-panel progress-guidance" aria-labelledby="progress-guidance-title">
+              <div>
+                <span className="eyebrow">Nächste sinnvolle Schritte</span>
+                <h2 id="progress-guidance-title">Was braucht gerade Übung?</h2>
+                {dueItems.length > 0 ? (
+                  <p>{dueItems.length} fällige Wiederholungen warten. Beginne damit, bevor du neue Themen vertiefst.</p>
+                ) : (
+                  <p>Es sind aktuell keine Wiederholungen fällig.</p>
+                )}
+              </div>
+              {dueItems.length > 0 && <button className="button reveal-button" onClick={() => changeView("review")}>Fällige Inhalte öffnen <span aria-hidden="true">→</span></button>}
+              {topicAttention.length > 0 ? (
+                <ul className="section-progress-list">
+                  {topicAttention.slice(0, 3).map((topic) => {
+                    const title = topic.topicId === unassignedTopic
+                      ? "Nicht eindeutig zugeordnet"
+                      : chapterCatalog.find((chapter) => chapter.id === topic.topicId)?.title ?? "Kapitel";
+                    const details = [
+                      topic.markedForReview ? `${topic.markedForReview} markiert` : "",
+                      topic.repeatedMistakes ? `${topic.repeatedMistakes} mehrfach falsch` : "",
+                      topic.confidentErrors ? `${topic.confidentErrors} zuletzt selbstsicher falsch` : "",
+                    ].filter(Boolean).join(" · ");
+                    return (
+                      <li key={topic.topicId}>
+                        <span><strong>{title}</strong><small>{details}</small></span>
+                        <button className="button secondary" onClick={() => openTopic(topic.topicId)}>Üben</button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              ) : (
+                <p>Noch keine Themen mit markierten oder wiederholt falsch beantworteten Inhalten.</p>
+              )}
+              {(repeatedMistakeCount > 0 || confidentErrorCount > 0) && (
+                <p className="setup-hint">
+                  {repeatedMistakeCount > 0 && `${repeatedMistakeCount} Inhalte wurden in mehreren Lernsitzungen falsch beantwortet. `}
+                  {confidentErrorCount > 0 && `${confidentErrorCount} zuletzt falsch beantwortete Inhalte waren mit hoher Sicherheit markiert.`}
+                </p>
+              )}
+            </section>
             <div className="progress-history-link">
               <p>Deine abgeschlossenen Lern- und Prüfungssitzungen bleiben vom Beherrschungsstatus getrennt.</p>
               <button className="button secondary" onClick={() => changeView("history")}>Lernverlauf öffnen</button>
@@ -2156,26 +2211,26 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
                               ).length;
                               return <li key={sectionKey}><span>{sectionLabel}</span><span>{sectionMastered}/{sectionQuestions.length} sicher</span></li>;
                             })}
-                            {unassignedQuestions.length > 0 && (
-                              <article className="progress-topic">
-                                <div className="progress-topic-detail">
-                                  <h3>Nicht eindeutig zugeordnet</h3>
-                                  <p>{unassignedQuestions.filter((question) =>
-                                    scheduleModes(question).some((mode) => isKnown(question, mode)),
-                                  ).length} von {unassignedQuestions.length} Lerninhalten zweimal sicher erinnert</p>
-                                  <button className="button secondary" onClick={() => openTopic(unassignedTopic)}>Lerninhalte prüfen <span aria-hidden="true">→</span></button>
-                                </div>
-                              </article>
-                            )}
                           </ul>
                         </>
                       ) : <p>Noch keine belegten Lerninhalte hinterlegt.</p>}
                     </div>
                     <div className="topic-progress" role="progressbar" aria-label={`${chapter.title}: ${mastered} von ${items.length} Lernzielen sicher`} aria-valuemin={0} aria-valuemax={items.length || 1} aria-valuenow={mastered}><span style={{ width: `${items.length ? mastered / items.length * 100 : 0}%` }} /></div>
-                    <span className="topic-progress-label">{items.length ? Math.round(mastered / items.length * 100) : "—"}</span>
+                    <span className="topic-progress-label">{items.length ? `${mastered}/${items.length} sicher` : "Noch leer"}</span>
                   </article>
                 );
               })}
+              {unassignedQuestions.length > 0 && (
+                <article className="progress-topic">
+                  <div className="progress-topic-detail">
+                    <h3>Nicht eindeutig zugeordnet</h3>
+                    <p>{unassignedQuestions.filter((question) =>
+                      scheduleModes(question).some((mode) => isKnown(question, mode)),
+                    ).length} von {unassignedQuestions.length} Lerninhalten zweimal sicher erinnert</p>
+                    <button className="button secondary" onClick={() => openTopic(unassignedTopic)}>Lerninhalte prüfen <span aria-hidden="true">→</span></button>
+                  </div>
+                </article>
+              )}
             </div>
             <section className="next-step-panel">
             <div><span className="eyebrow">Wiederholungsrhythmus</span><h2>Einfache, nachvollziehbare Wiederholungsplanung</h2><p>Sichere Antworten führen zu steigenden lokalen Kalenderabständen; falsche oder unsichere Antworten werden am nächsten Tag wieder fällig. Eine niedrige Sicherheit verkürzt auch bei richtiger Antwort auf einen Tag. Als beherrscht zählen Inhalte erst nach zwei sicheren, fälligen Wiederholungen. Das ist eine praktische Planungshilfe, keine Behauptung eines einzig optimalen Intervalls.</p></div>
@@ -2208,16 +2263,18 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
             {contentPreview && (
               <section className="package-preview" aria-labelledby="package-preview-title">
                 <span className="eyebrow">Vorschau · noch nicht übernommen</span>
-                <h3 id="package-preview-title">{contentPreview.questions.length} Lerninhalte für {course.name}</h3>
+                <h3 id="package-preview-title">Paket für {course.name}</h3>
                 <div className="overview-stats">
+                  <article className="stat-card"><span>Kapitel</span><strong>{contentPreview.chapters.length}</strong></article>
                   <article className="stat-card"><span>Lernkarten</span><strong>{contentPreview.flashcardCount}</strong></article>
                   <article className="stat-card"><span>Quizfragen</span><strong>{contentPreview.quizCount}</strong></article>
-                  <article className="stat-card"><span>Kapitel</span><strong>{contentPreview.chapters.length}</strong></article>
+                  <article className="stat-card"><span>Quellen</span><strong>{contentPreview.materialNames.length}</strong></article>
                 </div>
-                <h4>Kapitel und Abschnitte</h4>
+                <p>{contentPreview.questions.length} belegte Lerninhalte · Quellen: {contentPreview.materialNames.join(", ")}</p>
+                <h4>Kapitel</h4>
                 <ul className="package-list">{contentPreview.chapters.map((chapter) => <li key={chapter.id}><strong>{chapter.title}</strong>{chapter.sections.length > 0 && <span>{chapter.sections.map((section) => section.title).join(" · ")}</span>}</li>)}</ul>
-                <h4>Im Paket angegebene Quellen und Seiten</h4>
-                <ul className="package-list">{contentPreview.questions.map((question) => <li key={question.id}><span>{question.prompt}</span><small>{question.sourceFileName} · S. {question.sourcePages.join(", ")}</small></li>)}</ul>
+                <h4>Warnhinweise</h4>
+                <ul className="package-list">{contentPreview.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>
                 <div className="data-actions">
                   <button className="button reveal-button" onClick={confirmContentImport}>Import bestätigen</button>
                   <button className="button secondary" onClick={() => { setContentPreview(null); setContentMessage("Import verworfen. Es wurden keine Inhalte geändert."); }}>Abbrechen</button>

@@ -1,0 +1,40 @@
+{
+  "format": "study-space-content",
+  "version": 1,
+  "courseId": "course-abwl",
+  "chapters": [
+    {
+      "id": "ui-chapter",
+      "title": "UI Testkapitel",
+      "sections": []
+    }
+  ],
+  "items": [
+    {
+      "id": "ui-card",
+      "kind": "flashcard",
+      "prompt": "UI Testfrage",
+      "answer": "Testantwort",
+      "chapterId": "ui-chapter",
+      "source": {
+        "fileName": "testquelle.pdf",
+        "page": 2
+      }
+    },
+    {
+      "id": "ui-quiz",
+      "kind": "quiz",
+      "prompt": "UI Quizfrage",
+      "options": [
+        "Richtig",
+        "Falsch"
+      ],
+      "correctOption": 0,
+      "chapterId": "ui-chapter",
+      "source": {
+        "fileName": "testquelle.pdf",
+        "page": 3
+      }
+    }
+  ]
+}

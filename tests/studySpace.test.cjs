@@ -23,6 +23,7 @@ const validatePackageSchema = new Ajv2020({ allErrors: true }).compile(packageSc
 const validPackageFixture = fs.readFileSync(path.join(__dirname, "fixtures", "content-valid.json"), "utf8");
 const invalidPackageFixture = fs.readFileSync(path.join(__dirname, "fixtures", "content-invalid-chapter.json"), "utf8");
 const invalidSchemaFixture = fs.readFileSync(path.join(__dirname, "fixtures", "content-invalid-schema.json"), "utf8");
+const uiWorkflowFixture = fs.readFileSync(path.join(__dirname, "fixtures", "content-ui-workflow.json"), "utf8");
 
 function course(overrides = {}) {
   return {
@@ -151,6 +152,31 @@ test("external package validates course, chapter, material, page, and item types
   assert.equal(preview.flashcardCount, 1);
   assert.equal(preview.questions[0].sourceMaterialId, "material-1");
   assert.deepEqual(preview.questions[0].sourcePages, [4]);
+  assert.deepEqual(preview.materialNames, ["source.pdf"]);
+  assert.ok(preview.warnings.some((warning) => warning.includes("nicht anhand einer Quelldatei geprüft")));
+});
+
+test("compact import preview reports remapped chapter IDs and uncertain content", () => {
+  const existingCourse = course({
+    chapters: [{ id: "chapter-one", title: "Existing chapter", sections: [] }],
+  });
+  const preview = studySpace.parseContentPackage(
+    packageText([flashcard({ uncertain: true })]),
+    existingCourse,
+  );
+  assert.deepEqual(preview.chapters.map(({ id }) => id), ["chapter-one~2"]);
+  assert.equal(preview.questions[0].chapterId, "chapter-one~2");
+  assert.ok(preview.warnings.some((warning) => warning.includes("Kapitel-ID")));
+  assert.ok(preview.warnings.some((warning) => warning.includes("als unsicher markiert")));
+  assert.deepEqual(
+    JSON.parse(uiWorkflowFixture).items.map(({ id }) => id),
+    ["ui-card", "ui-quiz"],
+  );
+  assert.equal(validatePackageSchema(JSON.parse(uiWorkflowFixture)), true);
+  assert.doesNotThrow(() => studySpace.parseContentPackage(
+    uiWorkflowFixture,
+    course({ id: "course-abwl", materials: [] }),
+  ));
 });
 
 test("valid and invalid JSON fixtures are checked before any course data changes", () => {

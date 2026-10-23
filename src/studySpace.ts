@@ -69,6 +69,7 @@ export type ContentImportPreview = {
   chapters: StudyChapter[];
   questions: StudyQuestion[];
   materialNames: string[];
+  warnings: string[];
   flashcardCount: number;
   quizCount: number;
 };
@@ -336,6 +337,7 @@ export function parseContentPackage(
   const chapterIds = new Set<string>();
   const existingChapterIds = new Set(course.chapters.map((chapter) => chapter.id));
   const chapterIdMap = new Map<string, string>();
+  const warnings: string[] = [];
   for (const raw of parsed.chapters) {
     if (!isRecord(raw) || !hasOnlyKeys(raw, ["id", "title", "sections"])
       || typeof raw.id !== "string" || !raw.id.trim() || raw.id !== raw.id.trim()
@@ -354,6 +356,9 @@ export function parseContentPackage(
     while (existingChapterIds.has(chapterId)) {
       chapterId = `${raw.id}~${suffix}`;
       suffix += 1;
+    }
+    if (chapterId !== raw.id) {
+      warnings.push(`Kapitel-ID „${raw.id}“ war bereits vorhanden; die importierte ID wurde zu „${chapterId}“ geändert.`);
     }
     existingChapterIds.add(chapterId);
     chapterIdMap.set(raw.id, chapterId);
@@ -469,6 +474,13 @@ export function parseContentPackage(
     chapters,
     questions,
     materialNames: [...materialNames],
+    warnings: [
+      ...warnings,
+      ...(questions.some((question) => question.uncertain)
+        ? ["Mindestens ein Lerninhalt ist als unsicher markiert."]
+        : []),
+      "Quellen- und Seitenangaben stammen aus dem Paket und wurden von der App nicht anhand einer Quelldatei geprüft.",
+    ],
     flashcardCount: questions.filter((question) => question.kind === "flashcard").length,
     quizCount: questions.filter((question) => question.kind === "quiz").length,
   };

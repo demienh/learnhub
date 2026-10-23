@@ -67,6 +67,18 @@ export type StudyHistoryEntry = {
   questionIds: string[];
   missedIds: string[];
 };
+export type TopicAttentionQuestion = {
+  questionId: string;
+  topicId: string;
+  markedForReview: boolean;
+  confidentError: boolean;
+};
+export type TopicAttentionSummary = {
+  topicId: string;
+  markedForReview: number;
+  repeatedMistakes: number;
+  confidentErrors: number;
+};
 export type QuestionProgressInfo = { id: string; kind: "flashcard" | "quiz" };
 export type ImportEnvelope = {
   format: typeof EXPORT_FORMAT;
@@ -291,6 +303,44 @@ export function nextReviewIndex(currentIndex: number, remainingCount: number, re
   return removedCurrent
     ? Math.min(currentIndex, remainingCount - 1)
     : (currentIndex + 1) % remainingCount;
+}
+
+export function summarizeTopicAttention(
+  history: readonly StudyHistoryEntry[],
+  questions: readonly TopicAttentionQuestion[],
+): TopicAttentionSummary[] {
+  const missesByQuestion = new Map<string, number>();
+  for (const entry of history) {
+    if (entry.type !== "study") continue;
+    for (const questionId of new Set(entry.missedIds)) {
+      missesByQuestion.set(questionId, (missesByQuestion.get(questionId) ?? 0) + 1);
+    }
+  }
+
+  const byTopic = new Map<string, TopicAttentionSummary>();
+  const seenQuestions = new Set<string>();
+  for (const question of questions) {
+    if (seenQuestions.has(question.questionId)) continue;
+    seenQuestions.add(question.questionId);
+    const repeatedMistake = (missesByQuestion.get(question.questionId) ?? 0) >= 2;
+    if (!question.markedForReview && !question.confidentError && !repeatedMistake) continue;
+    const summary = byTopic.get(question.topicId) ?? {
+      topicId: question.topicId,
+      markedForReview: 0,
+      repeatedMistakes: 0,
+      confidentErrors: 0,
+    };
+    summary.markedForReview += Number(question.markedForReview);
+    summary.repeatedMistakes += Number(repeatedMistake);
+    summary.confidentErrors += Number(question.confidentError);
+    byTopic.set(question.topicId, summary);
+  }
+
+  return [...byTopic.values()].sort((left, right) =>
+    right.repeatedMistakes - left.repeatedMistakes
+    || right.confidentErrors - left.confidentErrors
+    || right.markedForReview - left.markedForReview
+    || left.topicId.localeCompare(right.topicId, "de"));
 }
 
 export function scheduleReview(

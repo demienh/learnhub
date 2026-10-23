@@ -35,6 +35,8 @@ Eine Study-Space-Sicherung aus dem Übersichtsbildschirm umfasst Fächer, erhalt
 
 Die Lernfunktionen umfassen aktives Erinnern, Lernkarten, Quiz, Fehlerliste, Wiederholungsplanung, kurze Lernsitzungen, Prüfungssimulationen, Notizen, Lesezeichen, Tagesziel, Verlauf, Suche und Tastaturkürzel. Leere Lernansichten sind beabsichtigt. Prüfungen ändern weder Wiederholungspläne noch Beherrschungsstatus.
 
+Die Fortschrittsansicht hebt fällige Wiederholungen sowie Kapitel mit markierten, wiederholt in Lernsitzungen verfehlten oder zuletzt mit hoher Sicherheit falsch beantworteten Inhalten hervor. Prüfungssimulationen zählen nicht als wiederholte Lernfehler. Beherrschung erfordert weiterhin mindestens zwei sichere Wiederholungen; kleine Kapitelstände werden als konkrete Zähler statt als Prozentdiagnose dargestellt. Der bestehende feste Wiederholungsplan und gespeicherte Verläufe bleiben unverändert.
+
 Der Lernstand und die Study-Space-Metadaten bleiben im `localStorage` des aktuellen Browsers. Lernpakete sind beim Einlesen auf 1 MB, Sicherungsdateien auf 20 MB begrenzt. Bereits gespeicherte Study Spaces werden nicht durch ein app-eigenes Gesamtgrößenlimit unänderbar: Änderungen werden zuerst im Browser gespeichert und erst danach als übernommen angezeigt. Lehnt der Browser den Schreibvorgang ab, bleibt der vorherige sichtbare und gespeicherte Stand erhalten; die Fehlermeldung empfiehlt, eine Sicherung zu exportieren und den verfügbaren Speicher zu prüfen. Browserdaten, privates Surfen oder das Löschen von Website-Daten können Daten entfernen; exportiere regelmäßig eine Study-Space-Sicherung. Es wird nichts an einen Server gesendet.
 
 ## Voraussetzungen und Start
