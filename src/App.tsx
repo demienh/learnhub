@@ -2,9 +2,11 @@ import { useEffect, useMemo, useRef, useState, type FormEvent, type SetStateActi
 import rawContent from "./content/fragen.json";
 import {
   applyContentImport,
+  commitStudySpace,
   createDefaultSpace,
   createStudySpaceBackup,
   mergeStudySpace,
+  isQuestionChapterUnresolved,
   parseContentPackage,
   parseStudySpace,
   persistStudySpace,
@@ -328,16 +330,17 @@ function App() {
 
   const commitSpace = (update: StudySpace | ((previous: StudySpace) => StudySpace)): boolean => {
     const next = typeof update === "function" ? update(spaceRef.current) : update;
+    let committed: StudySpace;
     try {
-      persistStudySpace(window.localStorage, next);
+      committed = commitStudySpace(window.localStorage, next);
     } catch (error) {
       setStorageWarning(true);
       setWorkspaceMessage(error instanceof Error ? error.message : "Die Änderung konnte nicht lokal gespeichert werden.");
       setWorkspaceError(true);
       return false;
     }
-    spaceRef.current = next;
-    setSpace(next);
+    spaceRef.current = committed;
+    setSpace(committed);
     setStorageWarning(false);
     setWorkspaceMessage("");
     setWorkspaceError(false);
@@ -624,8 +627,12 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
     question.questionType,
     progress.notes[question.id],
   ].some((value) => value?.toLocaleLowerCase("de").includes(normalizedSearch));
-  const chapterForQuestion = (question: Question) =>
-    chapterCatalog.find((chapter) => chapter.id === resolveQuestionChapterId(question, course.chapters))?.title ?? "";
+  const chapterForQuestion = (question: Question) => {
+    const resolved = chapterCatalog.find((chapter) => chapter.id === resolveQuestionChapterId(question, course.chapters))?.title;
+    return resolved ?? (isQuestionChapterUnresolved(question, course.chapters)
+      ? `Nicht eindeutig zugeordnet · ${question.chapter}`
+      : "");
+  };
   const chapterIdForQuestion = (question: Question) =>
     resolveQuestionChapterId(question, course.chapters);
   const sectionKeyForQuestion = (question: Question) =>
@@ -659,7 +666,9 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
     && matchesSelectedTopics(question, progress.sessionPreferences.examTopics),
   ).length;
   const matchesTopic = (question: Question) =>
-    (chapterFilter === "Alle Themen" || chapterIdForQuestion(question) === chapterFilter)
+    (chapterFilter === "Alle Themen"
+      || chapterFilter === unassignedTopic && isQuestionChapterUnresolved(question, course.chapters)
+      || chapterIdForQuestion(question) === chapterFilter)
     && (typeFilter === "Alle Fragetypen" || question.questionType === typeFilter)
     && matchesSearch(question);
 
@@ -1461,6 +1470,10 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
 
   const topicQuestions = (chapter: Chapter) => usableQuestions.filter((question) =>
     chapterIdForQuestion(question) === chapter.id && matchesSearch(question));
+  const unassignedQuestions = usableQuestions.filter((question) =>
+    isQuestionChapterUnresolved(question, course.chapters));
+  const visibleUnassignedQuestions = unassignedQuestions.filter(matchesSearch);
+  const unassignedTopic = "__unassigned_chapter__";
   const getNavigationCount = (target: View): number | null => {
     if (target === "learn" || target === "cards") return usableQuestions.filter(isLearnableFlashcard).length;
     if (target === "quiz") return usableQuestions.filter(isPlayableQuiz).length;
@@ -1676,6 +1689,14 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
                 );
               })}
             </div>
+            {visibleUnassignedQuestions.length > 0 && (
+              <section className="empty-panel" aria-labelledby="unassigned-topic-title">
+                <span className="eyebrow">Kapitelzuordnung offen</span>
+                <h2 id="unassigned-topic-title">Nicht eindeutig zugeordnet</h2>
+                <p>{visibleUnassignedQuestions.length} Lerninhalte konnten keinem Kapitel sicher zugeordnet werden. Sie bleiben erhalten und können hier gezielt gelernt werden; es wurde keine Zuordnung anhand einer möglicherweise veralteten Kapitelnummer erfunden.</p>
+                <button className="button secondary" onClick={() => openTopic(unassignedTopic)}>Lerninhalte anzeigen <span aria-hidden="true">→</span></button>
+              </section>
+            )}
             {normalizedSearch && chapterCatalog.every((chapter) =>
               !chapter.title.toLocaleLowerCase("de").includes(normalizedSearch) && topicQuestions(chapter).length === 0,
             ) && <section className="empty-panel"><h2>Keine Treffer</h2><p>Ändere den Suchbegriff, um Kapitel oder Lerninhalte anzuzeigen.</p></section>}
@@ -1833,9 +1854,13 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
 
         {(view === "learn" && chapterFilter !== "Alle Themen") && (
           <section className="chapter-focus">
-            <span className="eyebrow">Kapitelansicht</span>
-            <h2>{chapterCatalog.find((chapter) => chapter.id === chapterFilter)?.title ?? chapterFilter}</h2>
-            <p>{usableQuestions.some((question) => chapterIdForQuestion(question) === chapterFilter)
+            <span className="eyebrow">{chapterFilter === unassignedTopic ? "Kapitelzuordnung offen" : "Kapitelansicht"}</span>
+            <h2>{chapterFilter === unassignedTopic
+              ? "Nicht eindeutig zugeordnet"
+              : chapterCatalog.find((chapter) => chapter.id === chapterFilter)?.title ?? chapterFilter}</h2>
+            <p>{chapterFilter === unassignedTopic
+              ? "Diese erhaltenen Lerninhalte haben keine sichere Kapitel-ID. Ähnliche oder doppelte Kapitelnamen und frühere Kapitelnummern reichen nicht für eine verlässliche Zuordnung."
+              : usableQuestions.some((question) => chapterIdForQuestion(question) === chapterFilter)
               ? "Die folgenden Lernziele, Zusammenfassungen und Begriffe stammen ausschließlich aus belegten Einträgen. Die Folienangaben erscheinen direkt an der Frage."
               : `Für ${chapterCatalog.find((chapter) => chapter.id === chapterFilter)?.title ?? chapterFilter} liegen noch keine am Original-Foliensatz geprüften Lernziele oder Zusammenfassungen vor. Prüfe Kapitelname und Foliengliederung an der Originalquelle außerhalb der App.`}</p>
           </section>
@@ -1938,7 +1963,7 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
               </p>
             )}
             <section className="filters" aria-label="Inhalte filtern">
-              <label><span>Thema</span><select value={chapterFilter} onChange={(event) => setChapterFilter(event.target.value)}><option>Alle Themen</option>{chapters.map((chapter) => <option key={chapter.id ?? chapter.number} value={chapter.id ?? chapter.title}>{chapter.number}. {chapter.title}</option>)}</select></label>
+              <label><span>Thema</span><select value={chapterFilter} onChange={(event) => setChapterFilter(event.target.value)}><option>Alle Themen</option>{chapters.map((chapter) => <option key={chapter.id ?? chapter.number} value={chapter.id ?? chapter.title}>{chapter.number}. {chapter.title}</option>)}{unassignedQuestions.length > 0 && <option value={unassignedTopic}>Nicht eindeutig zugeordnet ({unassignedQuestions.length})</option>}</select></label>
               <label><span>Fragetyp</span><select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}><option>Alle Fragetypen</option>{questionTypes.map((type) => <option key={type}>{type}</option>)}</select></label>
               <span className="filter-hint">Suche und Filter gelten gemeinsam.</span>
             </section>
@@ -2131,6 +2156,17 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
                               ).length;
                               return <li key={sectionKey}><span>{sectionLabel}</span><span>{sectionMastered}/{sectionQuestions.length} sicher</span></li>;
                             })}
+                            {unassignedQuestions.length > 0 && (
+                              <article className="progress-topic">
+                                <div className="progress-topic-detail">
+                                  <h3>Nicht eindeutig zugeordnet</h3>
+                                  <p>{unassignedQuestions.filter((question) =>
+                                    scheduleModes(question).some((mode) => isKnown(question, mode)),
+                                  ).length} von {unassignedQuestions.length} Lerninhalten zweimal sicher erinnert</p>
+                                  <button className="button secondary" onClick={() => openTopic(unassignedTopic)}>Lerninhalte prüfen <span aria-hidden="true">→</span></button>
+                                </div>
+                              </article>
+                            )}
                           </ul>
                         </>
                       ) : <p>Noch keine belegten Lerninhalte hinterlegt.</p>}

@@ -8,7 +8,6 @@ import {
 export const STUDY_SPACE_KEY = "study-space-v1";
 export const STUDY_SPACE_FORMAT = "personal-study-space";
 export const STUDY_SPACE_VERSION = 1;
-export const STUDY_SPACE_STORAGE_LIMIT = 1_500_000;
 export const CONTENT_PACKAGE_FORMAT = "study-space-content";
 export const CONTENT_PACKAGE_VERSION = 1;
 
@@ -270,14 +269,26 @@ export function persistStudySpace(
   space: StudySpace,
 ): void {
   const serialized = createStudySpaceBackup(space);
-  if (serialized.length > STUDY_SPACE_STORAGE_LIMIT) {
-    throw new Error("Der Study Space überschreitet das lokale Speicherlimit. Exportiere eine Sicherung und entferne nicht benötigte Inhalte.");
-  }
   try {
     storage.setItem(STUDY_SPACE_KEY, serialized);
   } catch {
     throw new Error("Der Study Space konnte lokal nicht gespeichert werden. Exportiere eine Sicherung und prüfe den verfügbaren Browser-Speicher.");
   }
+}
+
+export function commitStudySpace(
+  storage: Pick<Storage, "setItem">,
+  next: StudySpace,
+): StudySpace {
+  persistStudySpace(storage, next);
+  return next;
+}
+
+export function isQuestionChapterUnresolved(
+  question: Pick<StudyQuestion, "chapter" | "chapterId">,
+  chapters: StudyChapter[],
+): boolean {
+  return resolveQuestionChapterId(question, chapters) === undefined;
 }
 
 export function mergeStudySpace(current: StudySpace, imported: StudySpace): StudySpace {
