@@ -210,6 +210,32 @@ test("a saved study session round-trips mode-specific answers and rejects unrela
   assert.throws(() => progress.parseProgressImport(JSON.stringify(progress.createProgressExport(invalidState)), questions));
 });
 
+test("abandoning a study session clears only the unfinished session and keeps prior progress", () => {
+  const session = {
+    type: "study",
+    startedAt: "2026-10-22T08:00:00.000Z",
+    items: [{ questionId: "flash-a", mode: "lernen" }],
+    index: 0,
+    durationMinutes: null,
+    answers: {},
+    submitted: false,
+    retryMissed: false,
+  };
+  const state = blank({
+    unfinishedSession: session,
+    knownIds: ["flash-a"],
+    correctAnswers: 4,
+    history: [{ id: "earlier", date: "2026-10-21", type: "study", durationSeconds: 20, attempted: 1, correct: 1, questionIds: ["flash-a"], missedIds: [] }],
+  });
+  const abandoned = progress.abandonUnfinishedSession(state);
+  assert.equal(abandoned.unfinishedSession, null);
+  assert.deepEqual(abandoned.knownIds, state.knownIds);
+  assert.equal(abandoned.correctAnswers, state.correctAnswers);
+  assert.deepEqual(abandoned.history, state.history);
+  const noSession = blank();
+  assert.equal(progress.abandonUnfinishedSession(noSession), noSession);
+});
+
 test("invalid saved fields fail atomically during import validation", () => {
   const invalidStates = [
     blank({ bookmarks: ["missing-question"] }),

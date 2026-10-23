@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "study-space-content.schema.json",
   "title": "Study Space external content package",
-  "description": "Versioned package for source-backed study material created outside the app. File and page references do not require a PDF to be uploaded or analyzed in the app.",
+  "description": "Versioned package for source-backed study material created outside the app. File and page references do not require a PDF to be uploaded or analyzed in the app. The runtime additionally validates ID uniqueness, chapter/section references, and existing material references.",
   "type": "object",
   "additionalProperties": false,
   "required": ["format", "version", "chapters", "items"],
@@ -41,11 +41,13 @@
       "properties": {
         "id": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
         },
         "title": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "pattern": "\\S"
         }
       }
     },
@@ -56,11 +58,13 @@
       "properties": {
         "id": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
         },
         "title": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "pattern": "\\S"
         },
         "sections": {
           "type": "array",
@@ -81,7 +85,8 @@
         },
         "fileName": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "pattern": "\\S"
         },
         "page": {
           "type": "integer",
@@ -96,7 +101,8 @@
       "properties": {
         "fileName": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "pattern": "\\S"
         },
         "page": {
           "type": "integer",
@@ -110,24 +116,24 @@
       "properties": {
         "id": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
         },
         "kind": {
           "enum": ["flashcard", "quiz"]
         },
         "prompt": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "pattern": "\\S"
         },
         "answer": {
           "type": "string"
         },
         "options": {
           "type": "array",
-          "minItems": 2,
           "items": {
-            "type": "string",
-            "minLength": 1
+            "type": "string"
           }
         },
         "correctOption": {
@@ -154,15 +160,18 @@
         },
         "chapterId": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Stable ID of one chapter in this package; chapter titles and positions are display metadata only."
         },
         "sectionId": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Optional section ID, valid only within the chapter identified by chapterId."
         },
         "questionType": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "pattern": "\\S"
         },
         "uncertain": {
           "type": "boolean"
@@ -207,6 +216,15 @@
           "properties": {
             "kind": {
               "const": "quiz"
+            },
+            "options": {
+              "type": "array",
+              "minItems": 2,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              }
             }
           }
         }

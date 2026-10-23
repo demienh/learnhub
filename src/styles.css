@@ -36,6 +36,7 @@
   --danger: #873f39;
   --danger-surface: #f6e9e6;
   --danger-border: #d8aaa2;
+  --focus-on-dark: #c4dfd7;
   --notice: #77513d;
   --notice-surface: #f4ece4;
   --notice-border: #d9bba3;
@@ -1053,7 +1054,11 @@ input:focus-visible, textarea:focus-visible {
   outline-offset: 3px;
 }
 .sidebar button:focus-visible, .sidebar a:focus-visible {
-  outline-color: #c4dfd7;
+  outline-color: var(--focus-on-dark);
+}
+.save-warning {
+  line-height: 1.55;
+  overflow-wrap: anywhere;
 }
 
 @media (max-width: 760px) {

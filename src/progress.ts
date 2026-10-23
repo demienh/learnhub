@@ -133,6 +133,12 @@ export function appendHistory(history: StudyHistoryEntry[], entry: StudyHistoryE
   return [...history, entry].slice(-MAX_HISTORY_ENTRIES);
 }
 
+export function abandonUnfinishedSession(progress: Progress): Progress {
+  return progress.unfinishedSession
+    ? { ...progress, unfinishedSession: null }
+    : progress;
+}
+
 export function completeExamProgress(
   progress: Progress,
   session: UnfinishedSession,

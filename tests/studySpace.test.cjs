@@ -18,6 +18,8 @@ const progress = loadTypeScript("progress.ts");
 const studySpace = loadTypeScript("studySpace.ts", (specifier) =>
   specifier === "./progress" ? progress : require(specifier));
 const packageSchema = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "schemas", "study-space-content.schema.json"), "utf8"));
+const validPackageFixture = fs.readFileSync(path.join(__dirname, "fixtures", "content-valid.json"), "utf8");
+const invalidPackageFixture = fs.readFileSync(path.join(__dirname, "fixtures", "content-invalid-chapter.json"), "utf8");
 
 function course(overrides = {}) {
   return {
@@ -108,6 +110,111 @@ test("external package validates course, chapter, material, page, and item types
   assert.deepEqual(preview.questions[0].sourcePages, [4]);
 });
 
+test("valid and invalid JSON fixtures are checked before any course data changes", () => {
+  const target = course();
+  const preview = studySpace.parseContentPackage(validPackageFixture, target);
+  assert.equal(preview.questions.length, 1);
+  const before = structuredClone(target);
+  assert.throws(() => studySpace.parseContentPackage(invalidPackageFixture, target), /unbekanntes Kapitel/);
+  assert.deepEqual(target, before);
+  assert.throws(() => studySpace.parseContentPackage(
+    JSON.stringify({ ...JSON.parse(validPackageFixture), version: 99 }),
+    target,
+  ), /Unbekanntes Paketformat/);
+});
+
+test("sequential packages with repeated chapter IDs and names retain distinct chapter references", () => {
+  const target = course();
+  const firstPreview = studySpace.parseContentPackage(packageText([flashcard({ id: "first-card" })]), target);
+  const afterFirst = studySpace.applyContentImport(target, firstPreview);
+  const secondPackage = JSON.parse(packageText([flashcard({ id: "second-card" })]));
+  const secondPreview = studySpace.parseContentPackage(JSON.stringify(secondPackage), afterFirst);
+  const afterSecond = studySpace.applyContentImport(afterFirst, secondPreview);
+
+  assert.deepEqual(afterSecond.chapters.map(({ id, title }) => ({ id, title })), [
+    { id: "chapter-one", title: "Chapter" },
+    { id: "chapter-one~2", title: "Chapter" },
+  ]);
+  assert.deepEqual(afterSecond.questions.map(({ chapterId, chapterNumber }) => ({ chapterId, chapterNumber })), [
+    { chapterId: "chapter-one", chapterNumber: 1 },
+    { chapterId: "chapter-one~2", chapterNumber: 2 },
+  ]);
+  assert.equal(studySpace.resolveQuestionChapterId(afterSecond.questions[0], afterSecond.chapters), "chapter-one");
+  assert.equal(studySpace.resolveQuestionChapterId(afterSecond.questions[1], afterSecond.chapters), "chapter-one~2");
+  assert.equal(afterSecond.questions[1].sectionId, "section-one");
+  assert.equal(afterSecond.questions[1].chapter, "Chapter");
+});
+
+test("legacy unique chapter names migrate to IDs, while ambiguous duplicate titles remain unassigned", () => {
+  const legacyQuestion = {
+    id: "legacy-card",
+    kind: "flashcard",
+    prompt: "Legacy prompt",
+    answer: "Legacy answer",
+    chapter: "Legacy chapter",
+    chapterNumber: 1,
+    questionType: "Lernkarte",
+    sourcePages: [4],
+    sourceFileName: "source.pdf",
+    placeholder: false,
+    uncertain: false,
+  };
+  const legacy = {
+    format: studySpace.STUDY_SPACE_FORMAT,
+    version: studySpace.STUDY_SPACE_VERSION,
+    activeCourseId: "course-test",
+    courses: [course({
+      chapters: [
+        { id: "legacy-id", title: "Legacy chapter", sections: [] },
+        { id: "duplicate-a", title: "Same title", sections: [] },
+        { id: "duplicate-b", title: "Same title", sections: [] },
+      ],
+      questions: [legacyQuestion, { ...legacyQuestion, id: "ambiguous", chapter: "Same title", chapterNumber: 2 }],
+      progress: {
+        ...structuredClone(progress.emptyProgress),
+        knownIds: ["legacy-card"],
+        correctAnswers: 3,
+      },
+    })],
+  };
+  const migrated = studySpace.parseStudySpace(JSON.stringify(legacy)).courses[0];
+  assert.equal(migrated.questions[0].chapterId, "legacy-id");
+  assert.equal(migrated.questions[0].chapterNumber, 1);
+  assert.equal(migrated.questions[1].chapterId, undefined);
+  assert.equal(studySpace.resolveQuestionChapterId(migrated.questions[1], migrated.chapters), undefined);
+  assert.deepEqual(migrated.progress.knownIds, ["legacy-card"]);
+  assert.equal(migrated.progress.correctAnswers, 3);
+});
+
+test("local persistence rejects storage failures and oversized spaces without mutating input", () => {
+  const space = studySpace.createDefaultSpace(null, []);
+  const stored = [];
+  studySpace.persistStudySpace({ setItem: (...args) => stored.push(args) }, space);
+  assert.equal(stored.length, 1);
+  assert.equal(stored[0][0], studySpace.STUDY_SPACE_KEY);
+  assert.equal(JSON.parse(stored[0][1]).courses[0].id, "course-abwl");
+  const oldValue = "previous";
+  const rejectingStorage = {
+    value: oldValue,
+    setItem() { throw new Error("quota"); },
+  };
+  assert.throws(
+    () => studySpace.persistStudySpace(rejectingStorage, space),
+    /lokal nicht gespeichert/,
+  );
+  assert.equal(rejectingStorage.value, oldValue);
+
+  const oversized = {
+    ...space,
+    courses: [{ ...space.courses[0], name: "x".repeat(studySpace.STUDY_SPACE_STORAGE_LIMIT) }],
+  };
+  assert.throws(
+    () => studySpace.persistStudySpace({ setItem: () => assert.fail("must not write") }, oversized),
+    /überschreitet das lokale Speicherlimit/,
+  );
+  assert.equal(space.courses[0].name, "ABWL");
+});
+
 test("package import rejects unknown assignments, sources, pages, and invalid answers", () => {
   const target = course();
   assert.throws(() => studySpace.parseContentPackage(
@@ -126,6 +233,18 @@ test("package import rejects unknown assignments, sources, pages, and invalid an
     packageText([{ ...flashcard(), kind: "quiz", options: ["only one"], correctOption: 2 }]),
     target,
   ), /Antwortoptionen/);
+  assert.throws(() => studySpace.parseContentPackage(
+    packageText([flashcard({ prompt: undefined })]),
+    target,
+  ), /ungültige Felder/);
+  assert.throws(() => studySpace.parseContentPackage(
+    packageText([flashcard({ uncertain: "yes" })]),
+    target,
+  ), /ungültige Felder/);
+  assert.throws(() => studySpace.parseContentPackage(
+    packageText([flashcard({ keyTerms: [3] })]),
+    target,
+  ), /Begriffe oder Beispiele/);
   assert.throws(() => studySpace.parseContentPackage(
     packageText([flashcard({ chapterId: "unknown-chapter" })]),
     target,
@@ -162,7 +281,7 @@ test("duplicate chapter and item IDs fail without changing the course", () => {
     questions: [{ ...flashcard(), chapter: "Existing", sourcePages: [1], sourceFileName: "source.pdf", placeholder: false, uncertain: false }],
   });
   const snapshot = structuredClone(target);
-  assert.throws(() => studySpace.parseContentPackage(packageText(), target), /Kapitel-ID/);
+  assert.throws(() => studySpace.parseContentPackage(packageText(), target), /Lerninhalt-ID/);
   assert.deepEqual(target, snapshot);
 
   const fresh = course();
