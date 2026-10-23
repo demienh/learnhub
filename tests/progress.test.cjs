@@ -46,6 +46,23 @@ test("error-list index advances when an unresolved item remains", () => {
   assert.equal(progress.nextReviewIndex(0, 1, false), 0);
 });
 
+test("topic attention separates repeated learning-session misses from exam results", () => {
+  const summary = progress.summarizeTopicAttention([
+    { type: "study", missedIds: ["repeat", "single"] },
+    { type: "study", missedIds: ["repeat"] },
+    { type: "exam", missedIds: ["single", "exam-only"] },
+  ], [
+    { questionId: "repeat", topicId: "chapter-a", markedForReview: false, confidentError: false },
+    { questionId: "single", topicId: "chapter-b", markedForReview: true, confidentError: true },
+    { questionId: "exam-only", topicId: "chapter-c", markedForReview: false, confidentError: false },
+  ]);
+
+  assert.deepEqual(summary, [
+    { topicId: "chapter-a", markedForReview: 0, repeatedMistakes: 1, confidentErrors: 0 },
+    { topicId: "chapter-b", markedForReview: 1, repeatedMistakes: 0, confidentErrors: 1 },
+  ]);
+});
+
 test("safe, early, incorrect, and overdue reviews preserve the calendar schedule", () => {
   const reviewedAt = new Date(2026, 9, 22, 12);
   const first = progress.scheduleReview(undefined, "sicher", reviewedAt);
@@ -208,6 +225,32 @@ test("a saved study session round-trips mode-specific answers and rejects unrela
   assert.deepEqual(progress.parseProgressImport(JSON.stringify(progress.createProgressExport(state)), questions), state);
   const invalidState = blank({ unfinishedSession: { ...session, answers: { "quiz:quiz-a": { selectedOption: 0, isCorrect: false } } } });
   assert.throws(() => progress.parseProgressImport(JSON.stringify(progress.createProgressExport(invalidState)), questions));
+});
+
+test("abandoning a study session clears only the unfinished session and keeps prior progress", () => {
+  const session = {
+    type: "study",
+    startedAt: "2026-10-22T08:00:00.000Z",
+    items: [{ questionId: "flash-a", mode: "lernen" }],
+    index: 0,
+    durationMinutes: null,
+    answers: {},
+    submitted: false,
+    retryMissed: false,
+  };
+  const state = blank({
+    unfinishedSession: session,
+    knownIds: ["flash-a"],
+    correctAnswers: 4,
+    history: [{ id: "earlier", date: "2026-10-21", type: "study", durationSeconds: 20, attempted: 1, correct: 1, questionIds: ["flash-a"], missedIds: [] }],
+  });
+  const abandoned = progress.abandonUnfinishedSession(state);
+  assert.equal(abandoned.unfinishedSession, null);
+  assert.deepEqual(abandoned.knownIds, state.knownIds);
+  assert.equal(abandoned.correctAnswers, state.correctAnswers);
+  assert.deepEqual(abandoned.history, state.history);
+  const noSession = blank();
+  assert.equal(progress.abandonUnfinishedSession(noSession), noSession);
 });
 
 test("invalid saved fields fail atomically during import validation", () => {

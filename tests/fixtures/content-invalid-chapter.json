@@ -1,0 +1,24 @@
+{
+  "format": "study-space-content",
+  "version": 1,
+  "courseId": "course-test",
+  "chapters": [
+    {
+      "id": "chapter-one",
+      "title": "Chapter"
+    }
+  ],
+  "items": [
+    {
+      "id": "fixture-card",
+      "kind": "flashcard",
+      "prompt": "Fixture question",
+      "answer": "Fixture answer",
+      "chapterId": "missing-chapter",
+      "source": {
+        "materialId": "material-1",
+        "page": 1
+      }
+    }
+  ]
+}

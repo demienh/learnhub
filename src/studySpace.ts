@@ -35,6 +35,8 @@ export type StudyQuestion = {
   keyTerms?: string[];
   examples?: string[];
   chapter: string;
+  chapterId?: string;
+  sectionId?: string;
   chapterNumber?: number;
   section?: string;
   questionType: string;
@@ -67,6 +69,7 @@ export type ContentImportPreview = {
   chapters: StudyChapter[];
   questions: StudyQuestion[];
   materialNames: string[];
+  warnings: string[];
   flashcardCount: number;
   quizCount: number;
 };
@@ -120,6 +123,12 @@ function validateCourse(value: unknown): value is Course {
     return (item.kind === "flashcard" || item.kind === "quiz")
       && typeof item.prompt === "string" && Boolean(item.prompt.trim())
       && typeof item.chapter === "string"
+      && (item.chapterId === undefined
+        || typeof item.chapterId === "string" && chapterIds.has(item.chapterId))
+      && (item.sectionId === undefined || typeof item.sectionId === "string")
+      && (item.sectionId === undefined || item.chapterId !== undefined
+        && chapters.some((chapter) => (chapter as StudyChapter).id === item.chapterId
+          && (chapter as StudyChapter).sections.some((section) => section.id === item.sectionId)))
       && typeof item.questionType === "string"
       && Array.isArray(item.sourcePages)
       && item.sourcePages.every((page) => Number.isSafeInteger(page) && Number(page) > 0)
@@ -170,18 +179,29 @@ export function createDefaultSpace(
   legacyChapters: Array<{ number: number; title: string }> = [],
 ): StudySpace {
   const now = new Date().toISOString();
+  const chapters = legacyChapters.map((chapter) => ({
+    id: `chapter-${chapter.number}`,
+    title: chapter.title,
+    sections: [],
+  }));
+  const questions = legacyQuestions.map((question) => {
+    const matchingChapters = chapters.filter((chapter) => chapter.title === question.chapter);
+    if (matchingChapters.length !== 1) return question;
+    const chapter = matchingChapters[0];
+    return {
+      ...question,
+      chapterId: chapter.id,
+      chapterNumber: chapters.indexOf(chapter) + 1,
+    };
+  });
   const abwl: Course = {
     id: "course-abwl",
     name: "ABWL",
     archived: false,
     createdAt: now,
     materials: [],
-    chapters: legacyChapters.map((chapter) => ({
-      id: `chapter-${chapter.number}`,
-      title: chapter.title,
-      sections: [],
-    })),
-    questions: legacyQuestions,
+    chapters,
+    questions,
     progress: migrateStoredProgress(legacyProgress, legacyQuestions),
     ...(transferTask ? { transferTask } : {}),
   };
@@ -209,7 +229,67 @@ export function parseStudySpace(text: string): StudySpace {
     || parsed.activeCourseId !== null && !parsed.courses.some((course) => (course as Course).id === parsed.activeCourseId)) {
     throw new Error("Die Study-Space-Sicherung hat ein ungültiges Format oder enthält fehlerhafte Fächer.");
   }
-  return parsed as unknown as StudySpace;
+  const space = parsed as unknown as StudySpace;
+  return {
+    ...space,
+    courses: space.courses.map(migrateLegacyChapterReferences),
+  };
+}
+
+function migrateLegacyChapterReferences(course: Course): Course {
+  let changed = false;
+  const questions = course.questions.map((question) => {
+    const chapterId = resolveQuestionChapterId(question, course.chapters);
+    if (!chapterId || question.chapterId === chapterId) return question;
+    const chapter = course.chapters.find((item) => item.id === chapterId)!;
+    changed = true;
+    const matchingSections = chapter.sections.filter((section) => section.title === question.section);
+    return {
+      ...question,
+      chapterId: chapter.id,
+      ...(matchingSections.length === 1 ? { sectionId: matchingSections[0].id } : {}),
+      chapterNumber: course.chapters.indexOf(chapter) + 1,
+    };
+  });
+  return changed ? { ...course, questions } : course;
+}
+
+export function resolveQuestionChapterId(
+  question: Pick<StudyQuestion, "chapter" | "chapterId">,
+  chapters: StudyChapter[],
+): string | undefined {
+  if (question.chapterId && chapters.some((chapter) => chapter.id === question.chapterId)) {
+    return question.chapterId;
+  }
+  const matches = chapters.filter((chapter) => chapter.title === question.chapter);
+  return matches.length === 1 ? matches[0].id : undefined;
+}
+
+export function persistStudySpace(
+  storage: Pick<Storage, "setItem">,
+  space: StudySpace,
+): void {
+  const serialized = createStudySpaceBackup(space);
+  try {
+    storage.setItem(STUDY_SPACE_KEY, serialized);
+  } catch {
+    throw new Error("Der Study Space konnte lokal nicht gespeichert werden. Exportiere eine Sicherung und prüfe den verfügbaren Browser-Speicher.");
+  }
+}
+
+export function commitStudySpace(
+  storage: Pick<Storage, "setItem">,
+  next: StudySpace,
+): StudySpace {
+  persistStudySpace(storage, next);
+  return next;
+}
+
+export function isQuestionChapterUnresolved(
+  question: Pick<StudyQuestion, "chapter" | "chapterId">,
+  chapters: StudyChapter[],
+): boolean {
+  return resolveQuestionChapterId(question, chapters) === undefined;
 }
 
 export function mergeStudySpace(current: StudySpace, imported: StudySpace): StudySpace {
@@ -234,7 +314,7 @@ export function parseContentPackage(
   text: string,
   course: Course,
 ): ContentImportPreview {
-  if (text.length > 5_000_000) throw new Error("Das Lerninhalte-Paket ist zu groß (maximal 5 MB).");
+  if (text.length > 1_000_000) throw new Error("Das Lerninhalte-Paket ist zu groß (maximal 1 MB).");
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -255,6 +335,9 @@ export function parseContentPackage(
   }
   const chapters: StudyChapter[] = [];
   const chapterIds = new Set<string>();
+  const existingChapterIds = new Set(course.chapters.map((chapter) => chapter.id));
+  const chapterIdMap = new Map<string, string>();
+  const warnings: string[] = [];
   for (const raw of parsed.chapters) {
     if (!isRecord(raw) || !hasOnlyKeys(raw, ["id", "title", "sections"])
       || typeof raw.id !== "string" || !raw.id.trim() || raw.id !== raw.id.trim()
@@ -268,15 +351,23 @@ export function parseContentPackage(
       throw new Error("Mindestens ein Kapitel oder Abschnitt ist ungültig oder doppelt.");
     }
     chapterIds.add(raw.id);
+    let chapterId = raw.id;
+    let suffix = 2;
+    while (existingChapterIds.has(chapterId)) {
+      chapterId = `${raw.id}~${suffix}`;
+      suffix += 1;
+    }
+    if (chapterId !== raw.id) {
+      warnings.push(`Kapitel-ID „${raw.id}“ war bereits vorhanden; die importierte ID wurde zu „${chapterId}“ geändert.`);
+    }
+    existingChapterIds.add(chapterId);
+    chapterIdMap.set(raw.id, chapterId);
     const sections = (raw.sections ?? []) as Array<{ id: string; title: string }>;
     if (new Set(sections.map((section) => section.id)).size !== sections.length) {
       throw new Error(`Kapitel „${raw.title}“ enthält doppelte Abschnitts-IDs.`);
     }
-    chapters.push({ id: raw.id, title: raw.title.trim(), sections: sections.map((section) => ({ id: section.id, title: section.title.trim() })) });
+    chapters.push({ id: chapterId, title: raw.title.trim(), sections: sections.map((section) => ({ id: section.id, title: section.title.trim() })) });
   }
-  const existingChapterIds = new Set(course.chapters.map((chapter) => chapter.id));
-  const duplicateChapter = chapters.find((chapter) => existingChapterIds.has(chapter.id));
-  if (duplicateChapter) throw new Error(`Kapitel-ID „${duplicateChapter.id}“ ist bereits im Fach vorhanden.`);
 
   const existingQuestionIds = new Set(course.questions.map((question) => question.id));
   const incomingIds = new Set<string>();
@@ -298,7 +389,7 @@ export function parseContentPackage(
       || typeof raw.prompt !== "string" || !raw.prompt.trim()
       || typeof raw.chapterId !== "string" || !chapterIds.has(raw.chapterId)
       || raw.sectionId !== undefined && (typeof raw.sectionId !== "string"
-        || !chapters.find((chapter) => chapter.id === raw.chapterId)?.sections.some((section) => section.id === raw.sectionId))
+        || !chapters.find((chapter) => chapter.id === chapterIdMap.get(raw.chapterId as string))?.sections.some((section) => section.id === raw.sectionId))
       || raw.questionType !== undefined && (typeof raw.questionType !== "string" || !raw.questionType.trim())
       || raw.uncertain !== undefined && typeof raw.uncertain !== "boolean"
       || raw.answer !== undefined && typeof raw.answer !== "string"
@@ -350,7 +441,7 @@ export function parseContentPackage(
     const sourceFileName = material?.fileName
       ?? (typeof source.fileName === "string" ? source.fileName.trim() : "");
     materialNames.add(sourceFileName);
-    const chapter = chapters.find((item) => item.id === raw.chapterId)!;
+    const chapter = chapters.find((item) => item.id === chapterIdMap.get(raw.chapterId as string))!;
     const section = typeof raw.sectionId === "string"
       ? chapter.sections.find((item) => item.id === raw.sectionId)?.title
       : undefined;
@@ -366,7 +457,9 @@ export function parseContentPackage(
       ...(Array.isArray(raw.keyTerms) ? { keyTerms: raw.keyTerms as string[] } : {}),
       ...(Array.isArray(raw.examples) ? { examples: raw.examples as string[] } : {}),
       chapter: chapter.title,
-      chapterNumber: chapters.findIndex((item) => item.id === chapter.id) + 1,
+      chapterId: chapter.id,
+      chapterNumber: course.chapters.length + chapters.findIndex((item) => item.id === chapter.id) + 1,
+      ...(typeof raw.sectionId === "string" ? { sectionId: raw.sectionId } : {}),
       ...(section ? { section } : {}),
       questionType: typeof raw.questionType === "string" ? raw.questionType : raw.kind === "quiz" ? "Multiple Choice" : "Lernkarte",
       sourcePages: [Number(source.page)],
@@ -381,6 +474,13 @@ export function parseContentPackage(
     chapters,
     questions,
     materialNames: [...materialNames],
+    warnings: [
+      ...warnings,
+      ...(questions.some((question) => question.uncertain)
+        ? ["Mindestens ein Lerninhalt ist als unsicher markiert."]
+        : []),
+      "Quellen- und Seitenangaben stammen aus dem Paket und wurden von der App nicht anhand einer Quelldatei geprüft.",
+    ],
     flashcardCount: questions.filter((question) => question.kind === "flashcard").length,
     quizCount: questions.filter((question) => question.kind === "quiz").length,
   };
@@ -396,6 +496,14 @@ export function applyContentImport(course: Course, preview: ContentImportPreview
   if (preview.chapters.some((chapter) => existingChapterIds.has(chapter.id))) {
     throw new Error("Eine Kapitel-ID ist inzwischen bereits vorhanden. Bitte Paket erneut prüfen.");
   }
+  const previewChapters = new Map(preview.chapters.map((chapter) => [chapter.id, chapter]));
+  if (previewChapters.size !== preview.chapters.length || preview.questions.some((question) => {
+    const chapter = previewChapters.get(question.chapterId ?? "");
+    return !chapter || question.sectionId !== undefined
+      && !chapter.sections.some((section) => section.id === question.sectionId);
+  })) {
+    throw new Error("Mindestens ein Lerninhalt verweist auf ein fehlendes Kapitel oder einen fehlenden Abschnitt.");
+  }
   if (preview.questions.some((question) =>
     !Number.isSafeInteger(question.sourcePages[0]) || question.sourcePages[0] < 1
     || !question.sourceFileName?.trim()
@@ -406,7 +514,13 @@ export function applyContentImport(course: Course, preview: ContentImportPreview
   return {
     ...course,
     chapters: [...course.chapters, ...preview.chapters],
-    questions: [...course.questions, ...preview.questions],
+    questions: [
+      ...course.questions,
+      ...preview.questions.map((question) => ({
+        ...question,
+        chapterNumber: course.chapters.length + preview.chapters.findIndex((chapter) => chapter.id === question.chapterId) + 1,
+      })),
+    ],
   };
 }
 

@@ -1,12 +1,16 @@
-import { useEffect, useMemo, useRef, useState, type Dispatch, type FormEvent, type SetStateAction } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent, type SetStateAction } from "react";
 import rawContent from "./content/fragen.json";
 import {
   applyContentImport,
+  commitStudySpace,
   createDefaultSpace,
   createStudySpaceBackup,
   mergeStudySpace,
+  isQuestionChapterUnresolved,
   parseContentPackage,
   parseStudySpace,
+  persistStudySpace,
+  resolveQuestionChapterId,
   STUDY_SPACE_KEY,
   type ContentImportPreview,
   type Course,
@@ -16,6 +20,7 @@ import {
 import {
   createProgressExport,
   appendHistory,
+  abandonUnfinishedSession,
   completeExamProgress,
   dailyGoalProgress,
   emptyProgress,
@@ -26,6 +31,7 @@ import {
   parseProgressImport,
   reviewKey,
   scheduleReview,
+  summarizeTopicAttention,
   STORAGE_KEY,
   todayLocalDate,
   weeklyMonthlySummary,
@@ -58,6 +64,8 @@ type Question = {
   keyTerms?: string[];
   examples?: string[];
   chapter: string;
+  chapterId?: string;
+  sectionId?: string;
   chapterNumber?: number;
   section?: string;
   questionType: string;
@@ -67,7 +75,7 @@ type Question = {
   uncertain: boolean;
 };
 
-type Chapter = { number: number; title: string };
+type Chapter = { id?: string; number: number; title: string };
 type Content = {
   source: { path: string; available: boolean; note: string };
   questions: Question[];
@@ -154,10 +162,19 @@ function readProgress(): { progress: Progress; warning: boolean } {
   }
 }
 
-function readStudySpace(): { space: StudySpace; warning: boolean; fatalError: string; migratedLegacy: boolean } {
+function readStudySpace(): { space: StudySpace; warning: boolean; fatalError: string; migratedLegacy: boolean; needsSave: boolean } {
   try {
     const storedSpace = window.localStorage.getItem(STUDY_SPACE_KEY);
-    if (storedSpace) return { space: parseStudySpace(storedSpace), warning: false, fatalError: "", migratedLegacy: false };
+    if (storedSpace) {
+      const space = parseStudySpace(storedSpace);
+      return {
+        space,
+        warning: false,
+        fatalError: "",
+        migratedLegacy: false,
+        needsSave: createStudySpaceBackup(space) !== storedSpace,
+      };
+    }
     const legacy = readProgress();
     if (legacy.warning) {
       return {
@@ -165,6 +182,7 @@ function readStudySpace(): { space: StudySpace; warning: boolean; fatalError: st
         warning: false,
         fatalError: "Der bestehende ABWL-Lernstand konnte nicht sicher geprüft werden. Er wurde nicht überschrieben.",
         migratedLegacy: false,
+        needsSave: false,
       };
     }
     const hasLegacyData = window.localStorage.getItem(STORAGE_KEY) !== null;
@@ -173,6 +191,7 @@ function readStudySpace(): { space: StudySpace; warning: boolean; fatalError: st
       warning: legacy.warning,
       fatalError: "",
       migratedLegacy: hasLegacyData && !legacy.warning,
+      needsSave: true,
     };
   } catch (error) {
     return {
@@ -180,6 +199,7 @@ function readStudySpace(): { space: StudySpace; warning: boolean; fatalError: st
       warning: false,
       fatalError: error instanceof Error ? error.message : "Der Study Space konnte nicht geladen werden.",
       migratedLegacy: false,
+      needsSave: false,
     };
   }
 }
@@ -277,8 +297,8 @@ function SourceNote({ question }: { question: Question }) {
 type CourseAppProps = {
   course: Course;
   progress: Progress;
-  setProgress: Dispatch<SetStateAction<Progress>>;
-  onCourseChange: (update: (course: Course) => Course) => void;
+  setProgress: (update: SetStateAction<Progress>) => boolean;
+  onCourseChange: (update: (course: Course) => Course) => boolean;
   onBack: () => void;
   saveWarning: boolean;
   setSaveWarning: (warning: boolean) => void;
@@ -287,6 +307,7 @@ type CourseAppProps = {
 function App() {
   const [initial] = useState(readStudySpace);
   const [space, setSpace] = useState(initial.space);
+  const spaceRef = useRef(initial.space);
   const [storageWarning, setStorageWarning] = useState(initial.warning);
   const [storageError, setStorageError] = useState(initial.fatalError);
   const [workspaceMessage, setWorkspaceMessage] = useState("");
@@ -298,24 +319,41 @@ function App() {
   const workspaceInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (storageError) return;
+    if (storageError || !initial.needsSave || spaceRef.current !== initial.space) return;
     try {
-      window.localStorage.setItem(STUDY_SPACE_KEY, createStudySpaceBackup(space));
+      persistStudySpace(window.localStorage, initial.space);
       if (initial.migratedLegacy) window.localStorage.removeItem(STORAGE_KEY);
       setStorageWarning(false);
     } catch {
       setStorageWarning(true);
     }
-  }, [space, storageError]);
+  }, []);
 
-  const updateCourse = (courseId: string, update: (course: Course) => Course) => {
-    setSpace((previous) => ({
+  const commitSpace = (update: StudySpace | ((previous: StudySpace) => StudySpace)): boolean => {
+    const next = typeof update === "function" ? update(spaceRef.current) : update;
+    let committed: StudySpace;
+    try {
+      committed = commitStudySpace(window.localStorage, next);
+    } catch (error) {
+      setStorageWarning(true);
+      setWorkspaceMessage(error instanceof Error ? error.message : "Die Änderung konnte nicht lokal gespeichert werden.");
+      setWorkspaceError(true);
+      return false;
+    }
+    spaceRef.current = committed;
+    setSpace(committed);
+    setStorageWarning(false);
+    setWorkspaceMessage("");
+    setWorkspaceError(false);
+    return true;
+  };
+  const updateCourse = (courseId: string, update: (course: Course) => Course): boolean =>
+    commitSpace((previous) => ({
       ...previous,
       courses: previous.courses.map((course) => course.id === courseId ? update(course) : course),
     }));
-  };
   const chooseCourse = (courseId: string) => {
-    setSpace((previous) => ({ ...previous, activeCourseId: courseId }));
+    if (!commitSpace((previous) => ({ ...previous, activeCourseId: courseId }))) return;
     setWorkspaceMessage("");
   };
   const activeCourse = space.courses.find((course) => course.id === space.activeCourseId);
@@ -334,7 +372,7 @@ function App() {
       questions: [],
       progress: structuredClone(emptyProgress),
     };
-    setSpace((previous) => ({ ...previous, courses: [...previous.courses, course] }));
+    if (!commitSpace((previous) => ({ ...previous, courses: [...previous.courses, course] }))) return;
     setCourseName("");
     setWorkspaceMessage(`Fach „${name}“ wurde angelegt. Es enthält noch keine Lerninhalte.`);
     setWorkspaceError(false);
@@ -347,7 +385,7 @@ function App() {
       setWorkspaceError(true);
       return;
     }
-    updateCourse(course.id, (current) => ({ ...current, name }));
+    if (!updateCourse(course.id, (current) => ({ ...current, name }))) return;
     setRenamingCourseId(null);
     setWorkspaceMessage(`Fach wurde in „${name}“ umbenannt.`);
     setWorkspaceError(false);
@@ -355,11 +393,12 @@ function App() {
 
   function removeCourse(course: Course) {
     if (!window.confirm(`Fach „${course.name}“ und seinen Lernstand wirklich löschen? Diese Aktion kann nicht rückgängig gemacht werden. Eventuell früher abgelegte PDFs bleiben unangetastet in IndexedDB dieses Browsers.`)) return;
-    setSpace((previous) => ({
+    const saved = commitSpace((previous) => ({
       ...previous,
       activeCourseId: previous.activeCourseId === course.id ? null : previous.activeCourseId,
       courses: previous.courses.filter((item) => item.id !== course.id),
     }));
+    if (!saved) return;
     setWorkspaceMessage(`Fach „${course.name}“ wurde gelöscht. Eventuell früher abgelegte PDF-Dateien bleiben aus Datenschutzgründen unangetastet in IndexedDB dieses Browsers.`);
     setWorkspaceError(false);
   }
@@ -382,6 +421,7 @@ function App() {
   async function importStudySpace(file: File | undefined) {
     if (!file) return;
     try {
+      if (file.size > 20_000_000) throw new Error("Die Study-Space-Sicherung darf höchstens 20 MB groß sein.");
       const text = await file.text();
       let imported: StudySpace;
       try {
@@ -399,7 +439,8 @@ function App() {
           legacyContent.chapters,
         );
       }
-      setSpace(storageError ? imported : mergeStudySpace(space, imported));
+      const next = storageError ? imported : mergeStudySpace(spaceRef.current, imported);
+      if (!commitSpace(next)) return;
       setStorageError("");
       setWorkspaceMessage("Fächer und Lernstände wurden ergänzt. Eventuell vorhandene PDF-Binärdateien sind nicht in JSON-Sicherungen enthalten.");
       setWorkspaceError(false);
@@ -425,12 +466,11 @@ function App() {
   }
 
   if (activeCourse) {
-    const setCourseProgress: Dispatch<SetStateAction<Progress>> = (update) => {
+    const setCourseProgress = (update: SetStateAction<Progress>) =>
       updateCourse(activeCourse.id, (course) => ({
         ...course,
         progress: typeof update === "function" ? update(course.progress) : update,
       }));
-    };
     return (
       <CourseApp
         key={activeCourse.id}
@@ -438,7 +478,7 @@ function App() {
         progress={activeCourse.progress}
         setProgress={setCourseProgress}
         onCourseChange={(update) => updateCourse(activeCourse.id, update)}
-        onBack={() => setSpace((previous) => ({ ...previous, activeCourseId: null }))}
+        onBack={() => { commitSpace((previous) => ({ ...previous, activeCourseId: null })); }}
         saveWarning={storageWarning}
         setSaveWarning={setStorageWarning}
       />
@@ -460,7 +500,7 @@ function App() {
         <h1>Fach auswählen oder anlegen</h1>
         <p>Verwalte Fächer und importiere belegte Lerninhalte aus JSON-Paketen, die außerhalb der App erstellt wurden. Diese App erzeugt keine Inhalte und verbindet sich nicht mit KI-Diensten.</p>
       </section>
-      {storageWarning && <p className="save-warning" role="alert">Der Study Space konnte nicht vollständig lokal gespeichert oder migriert werden. Prüfe den verfügbaren lokalen Speicher.</p>}
+      {storageWarning && <p className="save-warning" role="alert">Die letzte Änderung wurde nicht übernommen oder eine notwendige Migration konnte nicht gespeichert werden. Der vorherige Lernstand bleibt erhalten. Exportiere eine Sicherung und prüfe den verfügbaren Browser-Speicher.</p>}
       {workspaceMessage && <p className="data-message" role={workspaceError ? "alert" : "status"}>{workspaceMessage}</p>}
       <section className="workspace-create" aria-labelledby="create-course-title">
         <div><span className="eyebrow">Starten</span><h2 id="create-course-title">Ein Fach hinzufügen</h2></div>
@@ -519,12 +559,17 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
       available: false,
       note: "Quellenangaben stammen aus importierten Lernpaketen; die App speichert oder analysiert keine PDFs.",
     },
-    questions: course.questions.map((question) => ({
-      ...question,
-      chapterNumber: question.chapterNumber
-        ?? (course.chapters.findIndex((chapter) => chapter.title === question.chapter) + 1 || undefined),
-    })),
-    chapters: course.chapters.map((chapter, index) => ({ number: index + 1, title: chapter.title })),
+    questions: course.questions.map((question) => {
+      const chapterId = resolveQuestionChapterId(question, course.chapters);
+      return {
+        ...question,
+        ...(chapterId ? { chapterId } : {}),
+        chapterNumber: chapterId
+          ? course.chapters.findIndex((chapter) => chapter.id === chapterId) + 1
+          : question.chapterNumber,
+      };
+    }),
+    chapters: course.chapters.map((chapter, index) => ({ id: chapter.id, number: index + 1, title: chapter.title })),
     transferTask: course.transferTask,
   };
   const questions = content.questions;
@@ -565,7 +610,7 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
     () => questions.filter((question) => isLearnableFlashcard(question) || isPlayableQuiz(question)),
     [course.questions],
   );
-  const chapters = chapterCatalog.map((chapter) => chapter.title);
+  const chapters = chapterCatalog;
   const questionTypes = useMemo(
     () => [...new Set(usableQuestions.map((question) => question.questionType))].sort((a, b) => a.localeCompare(b, "de")),
     [usableQuestions],
@@ -583,28 +628,48 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
     question.questionType,
     progress.notes[question.id],
   ].some((value) => value?.toLocaleLowerCase("de").includes(normalizedSearch));
-  const chapterForQuestion = (question: Question) =>
-    chapterCatalog.find((chapter) => chapter.number === question.chapterNumber)?.title
-    ?? chapterCatalog.find((chapter) => new RegExp(`^Kapitel\\s+${chapter.number}\\b`, "i").test(question.chapter))?.title
-    ?? (chapterCatalog.some((chapter) => chapter.title === question.chapter) ? question.chapter : "");
+  const chapterForQuestion = (question: Question) => {
+    const resolved = chapterCatalog.find((chapter) => chapter.id === resolveQuestionChapterId(question, course.chapters))?.title;
+    return resolved ?? (isQuestionChapterUnresolved(question, course.chapters)
+      ? `Nicht eindeutig zugeordnet · ${question.chapter}`
+      : "");
+  };
+  const chapterIdForQuestion = (question: Question) =>
+    resolveQuestionChapterId(question, course.chapters);
+  const sectionKeyForQuestion = (question: Question) =>
+    question.sectionId ?? question.section ?? question.questionType;
+  const sectionLabelForQuestion = (question: Question) =>
+    question.section ?? question.questionType;
+  const selectedChapterIds = (selected: string[]) => [...new Set(selected.flatMap((value) => {
+    const exact = chapterCatalog.find((chapter) => chapter.id === value);
+    if (exact?.id) return [exact.id];
+    return chapterCatalog.filter((chapter) => chapter.title === value).map((chapter) => chapter.id).filter((id): id is string => Boolean(id));
+  }))];
+  const matchesSelectedTopics = (question: Question, selected: string[]) => {
+    if (selected.length === 0) return true;
+    const chapterId = chapterIdForQuestion(question);
+    return Boolean(chapterId && selectedChapterIds(selected).includes(chapterId));
+  };
   const availableTopics = useMemo(
-    () => [...new Set(usableQuestions.map(chapterForQuestion).filter(Boolean))].sort((a, b) => a.localeCompare(b, "de")),
-    [usableQuestions],
+    () => chapterCatalog.filter((chapter) =>
+      usableQuestions.some((question) => chapterIdForQuestion(question) === chapter.id),
+    ),
+    [chapterCatalog, usableQuestions],
   );
   const sessionCandidateCount = usableQuestions.filter((question) =>
-    (progress.sessionPreferences.topics.length === 0
-      || progress.sessionPreferences.topics.includes(chapterForQuestion(question)))
+    matchesSelectedTopics(question, progress.sessionPreferences.topics)
     && (question.kind === "quiz"
       ? progress.sessionPreferences.modes.includes("quiz")
       : progress.sessionPreferences.modes.some((mode) => mode === "lernen" || mode === "karten")),
   ).length;
   const examCandidateCount = usableQuestions.filter((question) =>
     question.kind === "quiz"
-    && (progress.sessionPreferences.examTopics.length === 0
-      || progress.sessionPreferences.examTopics.includes(chapterForQuestion(question))),
+    && matchesSelectedTopics(question, progress.sessionPreferences.examTopics),
   ).length;
   const matchesTopic = (question: Question) =>
-    (chapterFilter === "Alle Themen" || chapterForQuestion(question) === chapterFilter)
+    (chapterFilter === "Alle Themen"
+      || chapterFilter === unassignedTopic && isQuestionChapterUnresolved(question, course.chapters)
+      || chapterIdForQuestion(question) === chapterFilter)
     && (typeFilter === "Alle Fragetypen" || question.questionType === typeFilter)
     && matchesSearch(question);
 
@@ -657,8 +722,23 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
     return leftDate.localeCompare(rightDate) || left.question.prompt.localeCompare(right.question.prompt, "de");
   });
   const knownCount = usableQuestions.filter((question) => scheduleModes(question).some((mode) => isKnown(question, mode))).length;
+  const markedQuestionIds = new Set(uncertainItems.map((item) => item.question.id));
+  const confidentErrorIds = new Set(scheduledItems
+    .filter(({ record }) => record.confidence === "hoch" && record.rating !== "sicher")
+    .map(({ question }) => question.id));
+  const topicAttention = summarizeTopicAttention(
+    progress.history,
+    usableQuestions.map((question) => ({
+      questionId: question.id,
+      topicId: chapterIdForQuestion(question) ?? unassignedTopic,
+      markedForReview: markedQuestionIds.has(question.id),
+      confidentError: confidentErrorIds.has(question.id),
+    })),
+  );
+  const repeatedMistakeCount = topicAttention.reduce((total, topic) => total + topic.repeatedMistakes, 0);
+  const confidentErrorCount = topicAttention.reduce((total, topic) => total + topic.confidentErrors, 0);
   const masteredChapters = chapterCatalog.filter((chapter) => {
-    const topicQuestions = usableQuestions.filter((question) => chapterForQuestion(question) === chapter.title);
+    const topicQuestions = usableQuestions.filter((question) => chapterIdForQuestion(question) === chapter.id);
     return topicQuestions.length > 0 && topicQuestions.every((question) =>
       scheduleModes(question).some((mode) => isKnown(question, mode)));
   }).length;
@@ -848,8 +928,8 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
       usableQuestions.map((question) => ({
         id: question.id,
         kind: question.kind,
-        chapter: chapterForQuestion(question),
-        section: question.section,
+        chapter: chapterIdForQuestion(question) ?? "",
+        section: question.sectionId ?? question.section,
         modes: question.kind === "quiz" ? ["quiz"] as LearningMode[] : ["lernen", "karten"] as LearningMode[],
         due: false,
         weak: false,
@@ -868,12 +948,13 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
       })),
       {
         ...progress.sessionPreferences,
+        topics: selectedChapterIds(progress.sessionPreferences.topics),
         questionCount: progress.sessionPreferences.durationMinutes === null ? progress.sessionPreferences.questionCount : 100,
       },
     );
     if (!selectedItems.length) return;
     const now = new Date();
-    setProgress((previous) => ({
+    if (!setProgress((previous) => ({
       ...previous,
       unfinishedSession: {
         type: "study",
@@ -885,7 +966,7 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
         submitted: false,
         retryMissed: false,
       },
-    }));
+    }))) return;
     setCurrentIndex(0);
     setView("studySession");
     setAnnouncement(`Lernsitzung gestartet mit ${selectedItems.length} Fragen.`);
@@ -896,8 +977,7 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
     const pool = usableQuestions.filter((question) =>
       question.kind === "quiz"
       && (questionIds ? questionIds.includes(question.id) : (
-        progress.sessionPreferences.examTopics.length === 0
-        || progress.sessionPreferences.examTopics.includes(chapterForQuestion(question))
+        matchesSelectedTopics(question, progress.sessionPreferences.examTopics)
       )),
     );
     const selectedQuestions = makeExamSelection(
@@ -906,7 +986,7 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
     );
     if (!selectedQuestions.length) return;
     const now = new Date();
-    setProgress((previous) => ({
+    if (!setProgress((previous) => ({
       ...previous,
       unfinishedSession: {
         type: "exam",
@@ -918,7 +998,7 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
         submitted: false,
         retryMissed,
       },
-    }));
+    }))) return;
     setCurrentIndex(0);
     setSelectedOption(null);
     setView("exam");
@@ -943,11 +1023,11 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
         return answer && !answer.isCorrect ? [item.questionId] : [];
       }))],
     };
-    setProgress((previous) => ({
+    if (!setProgress((previous) => ({
       ...previous,
       unfinishedSession: null,
       history: appendHistory(previous.history, entry),
-    }));
+    }))) return;
     setCompletedSummary(entry);
     setView("studySummary");
     setFocusRequest((request) => request + 1);
@@ -977,11 +1057,11 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
           return answer && !answer.isCorrect ? [sessionItem.questionId] : [];
         }))],
       };
-      setProgress((previous) => ({
+      if (!setProgress((previous) => ({
         ...previous,
         unfinishedSession: null,
         history: appendHistory(previous.history, entry),
-      }));
+      }))) return;
       setCompletedSummary(entry);
       setView("studySummary");
       setFocusRequest((request) => request + 1);
@@ -990,12 +1070,12 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
     }
     const nextIndex = session.index + 1;
     const nextQuestion = usableQuestions.find((question) => question.id === session.items[nextIndex]?.questionId);
-    setProgress((previous) => ({
+    if (!setProgress((previous) => ({
       ...previous,
       unfinishedSession: previous.unfinishedSession
         ? { ...previous.unfinishedSession, index: nextIndex, answers }
         : null,
-    }));
+    }))) return;
     setCurrentIndex(nextIndex);
     setSelectedOption(null);
     setAnswerOpen(false);
@@ -1007,9 +1087,9 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
     const session = progress.unfinishedSession;
     if (!session || session.type !== "exam" || session.submitted) return;
     const correct = Object.values(session.answers).filter((answer) => answer.isCorrect).length;
-    setProgress((previous) => previous.unfinishedSession?.type === "exam"
+    if (!setProgress((previous) => previous.unfinishedSession?.type === "exam"
       ? completeExamProgress(previous, previous.unfinishedSession, new Date())
-      : previous);
+      : previous)) return;
     setSelectedOption(null);
     setFocusRequest((request) => request + 1);
     setAnnouncement(`Prüfung abgegeben. ${correct} von ${session.items.length} richtig. Die Ergebnisse verändern deinen Lernfortschritt nicht.`);
@@ -1019,50 +1099,45 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
     const session = progress.unfinishedSession;
     if (!session || session.type !== "exam" || session.submitted || session.answers[question.id]) return;
     const isCorrect = optionIndex === question.correctOption;
-    setProgress((previous) => ({
+    const nextIndex = session.index + 1;
+    if (!setProgress((previous) => ({
       ...previous,
       unfinishedSession: previous.unfinishedSession
         ? {
             ...previous.unfinishedSession,
+            index: Math.min(nextIndex, previous.unfinishedSession.items.length - 1),
             answers: {
               ...previous.unfinishedSession.answers,
               [question.id]: { selectedOption: optionIndex, isCorrect },
             },
           }
         : null,
-    }));
+    }))) return;
     const nextQuestion = usableQuestions.find((candidate) => candidate.id === session.items[session.index + 1]?.questionId);
     setAnnouncement(`Antwort gespeichert. ${Object.keys(session.answers).length + 1} von ${session.items.length} beantwortet. Richtig/Falsch wird erst nach Abgabe angezeigt. ${nextQuestion ? `Nächste Prüfungsfrage: ${nextQuestion.prompt}` : "Letzte Frage beantwortet; du kannst die Prüfung abgeben."}`);
     if (session.index + 1 < session.items.length) {
-      const nextIndex = session.index + 1;
-      setProgress((previous) => ({
-        ...previous,
-        unfinishedSession: previous.unfinishedSession
-          ? { ...previous.unfinishedSession, index: nextIndex }
-          : null,
-      }));
       setCurrentIndex(nextIndex);
       setFocusRequest((request) => request + 1);
     }
   }
 
   function toggleBookmark(questionId: string) {
-    setProgress((previous) => ({
+    if (!setProgress((previous) => ({
       ...previous,
       bookmarks: previous.bookmarks.includes(questionId)
         ? previous.bookmarks.filter((id) => id !== questionId)
         : [...previous.bookmarks, questionId],
-    }));
+    }))) return;
     setAnnouncement(progress.bookmarks.includes(questionId) ? "Lesezeichen entfernt." : "Frage gespeichert.");
   }
 
   function saveNote(questionId: string, value = noteDraft) {
-    setProgress((previous) => {
+    if (!setProgress((previous) => {
       const notes = { ...previous.notes };
       if (value.trim()) notes[questionId] = value.trim();
       else delete notes[questionId];
       return { ...previous, notes };
-    });
+    })) return;
     setAnnouncement(value.trim() ? "Notiz gespeichert." : "Notiz gelöscht.");
   }
 
@@ -1074,7 +1149,7 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
   }
 
   function abandonSession() {
-    setProgress((previous) => ({ ...previous, unfinishedSession: null }));
+    if (!setProgress(abandonUnfinishedSession)) return;
     setCurrentIndex(0);
     setView("overview");
     setFocusRequest((request) => request + 1);
@@ -1087,12 +1162,12 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
       if (!session || session.type !== "exam" || session.submitted) return;
       if (session.index + 1 < session.items.length) {
         const nextIndex = session.index + 1;
-        setProgress((previous) => ({
+        if (!setProgress((previous) => ({
           ...previous,
           unfinishedSession: previous.unfinishedSession
             ? { ...previous.unfinishedSession, index: nextIndex }
             : null,
-        }));
+        }))) return;
         setCurrentIndex(nextIndex);
         setFocusRequest((request) => request + 1);
       }
@@ -1108,12 +1183,12 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
       } else if (session.index + 1 < session.items.length) {
         const nextIndex = session.index + 1;
         const nextQuestion = usableQuestions.find((question) => question.id === session.items[nextIndex]?.questionId);
-        setProgress((previous) => ({
+        if (!setProgress((previous) => ({
           ...previous,
           unfinishedSession: previous.unfinishedSession
             ? { ...previous.unfinishedSession, index: nextIndex }
             : null,
-        }));
+        }))) return;
         setCurrentIndex(nextIndex);
         setSelectedOption(null);
         setAnswerOpen(false);
@@ -1147,12 +1222,12 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
       const session = progress.unfinishedSession;
       if (!session || session.type !== "exam" || session.submitted || session.index <= 0) return;
       const previousIndex = session.index - 1;
-      setProgress((previous) => ({
+      if (!setProgress((previous) => ({
         ...previous,
         unfinishedSession: previous.unfinishedSession
           ? { ...previous.unfinishedSession, index: previousIndex }
           : null,
-      }));
+      }))) return;
       setCurrentIndex(previousIndex);
       setFocusRequest((request) => request + 1);
       return;
@@ -1174,12 +1249,11 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
     const reviewedAt = new Date();
     const key = reviewKey(mode, question.id);
     const review = scheduleReview(progress.reviews[key], rating, reviewedAt, confidenceValue);
-    setQueueQuizFeedback(null);
     const confidenceNote = confidenceValue ? ` Sicherheit: ${confidenceValue}.` : "";
     const outcome = (rating === "sicher"
       ? `${review.streak >= 2 ? "Sichere Erinnerung erfasst." : "Erste sichere Erinnerung erfasst."} Nächste Wiederholung: ${dueLabel(review.dueDate, todayLocalDate(reviewedAt))}.`
       : `${rating === "unsicher" ? "Als unsicher markiert." : "Zur Wiederholung vorgemerkt."} Nächste Wiederholung: ${dueLabel(review.dueDate, todayLocalDate(reviewedAt))}.`) + confidenceNote;
-    setProgress((previous) => {
+    if (!setProgress((previous) => {
       const known = new Set(previous.knownIds);
       const wrong = new Set(previous.wrongIds);
       if (rating === "sicher") {
@@ -1200,7 +1274,8 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
           [key]: review,
         },
       };
-    });
+    })) return;
+    setQueueQuizFeedback(null);
     setNow(reviewedAt.getTime());
 
     if (view === "review" || view === "errors") {
@@ -1229,7 +1304,6 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
 
   function answerQuiz(question: Question, optionIndex: number) {
     if (selectedOption !== null || !isPlayableQuiz(question)) return;
-    setSelectedOption(optionIndex);
     const isCorrect = optionIndex === question.correctOption;
     const reviewedAt = new Date();
     const todayDate = todayLocalDate(reviewedAt);
@@ -1237,7 +1311,7 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
     const previousReview = progress.reviews[key];
     const review = scheduleReview(previousReview, isCorrect ? "sicher" : "noch einmal", reviewedAt, confidence);
 
-    setProgress((previous) => {
+    if (!setProgress((previous) => {
       const known = new Set(previous.knownIds);
       const wrong = new Set(previous.wrongIds);
       if (isCorrect) {
@@ -1271,7 +1345,8 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
             }
           : {}),
       };
-    });
+    })) return;
+    setSelectedOption(optionIndex);
     setNow(reviewedAt.getTime());
     const leavesQueue = view === "review"
       || view === "errors" && isCorrect && !question.uncertain;
@@ -1324,11 +1399,16 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
   async function importProgress(file: File | undefined) {
     if (!file) return;
     try {
+      if (file.size > 2_000_000) throw new Error("Die Lernstandsdatei darf höchstens 2 MB groß sein.");
       const imported = parseProgressImport(
         await file.text(),
         usableQuestions.map(({ id, kind }) => ({ id, kind })),
       );
-      setProgress(imported);
+      if (!setProgress(imported)) {
+        setImportMessage("Der importierte Lernstand wurde nicht übernommen, weil er nicht lokal gespeichert werden konnte.");
+        setImportError(true);
+        return;
+      }
       setImportMessage("Lernstand erfolgreich importiert.");
       setImportError(false);
       setAnnouncement("Der importierte Lernstand wurde gespeichert.");
@@ -1342,7 +1422,11 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
 
   function resetProgress() {
     if (!window.confirm("Möchtest du den gespeicherten Lernstand auf diesem Gerät wirklich zurücksetzen?")) return;
-    setProgress(emptyProgress);
+    if (!setProgress(emptyProgress)) {
+      setImportMessage("Der Lernstand wurde nicht zurückgesetzt, weil die Änderung nicht lokal gespeichert werden konnte.");
+      setImportError(true);
+      return;
+    }
     setSaveWarning(false);
     setImportMessage(`Lernstand für „${course.name}“ wurde zurückgesetzt.`);
     setImportError(false);
@@ -1352,6 +1436,7 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
   async function inspectContentPackage(file: File | undefined) {
     if (!file) return;
     try {
+      if (file.size > 1_000_000) throw new Error("Das Lerninhalte-Paket darf höchstens 1 MB groß sein.");
       const preview = parseContentPackage(await file.text(), course);
       setContentPreview(preview);
       setContentMessage("");
@@ -1369,7 +1454,11 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
     if (!contentPreview) return;
     try {
       const updated = applyContentImport(course, contentPreview);
-      onCourseChange(() => updated);
+      if (!onCourseChange(() => updated)) {
+        setContentMessage("Das Lernpaket wurde nicht übernommen, weil es nicht lokal gespeichert werden konnte. Der bisherige Inhalt blieb unverändert.");
+        setContentError(true);
+        return;
+      }
       setContentMessage(`${contentPreview.questions.length} belegte Lerninhalte wurden in „${course.name}“ übernommen.`);
       setContentError(false);
       setContentPreview(null);
@@ -1396,7 +1485,11 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
   }
 
   const topicQuestions = (chapter: Chapter) => usableQuestions.filter((question) =>
-    chapterForQuestion(question) === chapter.title && matchesSearch(question));
+    chapterIdForQuestion(question) === chapter.id && matchesSearch(question));
+  const unassignedQuestions = usableQuestions.filter((question) =>
+    isQuestionChapterUnresolved(question, course.chapters));
+  const visibleUnassignedQuestions = unassignedQuestions.filter(matchesSearch);
+  const unassignedTopic = "__unassigned_chapter__";
   const getNavigationCount = (target: View): number | null => {
     if (target === "learn" || target === "cards") return usableQuestions.filter(isLearnableFlashcard).length;
     if (target === "quiz") return usableQuestions.filter(isPlayableQuiz).length;
@@ -1538,7 +1631,7 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
           )}
         </section>
 
-        {saveWarning && <div className="save-warning" role="status">Der Lernstand konnte nicht vollständig lokal gespeichert oder migriert werden.</div>}
+        {saveWarning && <div className="save-warning" role="alert">Die letzte Änderung wurde nicht übernommen, weil sie nicht lokal gespeichert werden konnte. Der vorherige Lernstand blieb erhalten. Exportiere zur Sicherheit eine Sicherung und prüfe den verfügbaren Browser-Speicher.</div>}
         <span className="visually-hidden" role="status" aria-live="polite">{announcement}</span>
 
         {view === "overview" && (
@@ -1573,10 +1666,12 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
                 const mastered = items.filter((question) =>
                   scheduleModes(question).some((mode) => isKnown(question, mode)),
                 ).length;
-                const percent = items.length ? Math.round(mastered / items.length * 100) : 0;
-                const sections = [...new Set(items.map((question) => question.section || question.questionType))];
+                const sections = [...new Map(items.map((question) => [
+                  sectionKeyForQuestion(question),
+                  sectionLabelForQuestion(question),
+                ] as const))];
                 return (
-                  <article className="topic-card" key={chapter.number}>
+                  <article className="topic-card" key={chapter.id ?? chapter.number}>
                     <div className="topic-card-top">
                       <span className="tag">Themenbereich {chapter.number}</span>
                       <span className="topic-progress-label">{mastered}/{items.length} sicher</span>
@@ -1584,17 +1679,17 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
                     <h3>{chapter.title}</h3>
                     {items.length > 0 ? (
                       <>
-                        <p>{items.length} belegte Lernziele · {percent}% gefestigt</p>
+                        <p>{items.length} belegte Lernziele · {mastered} mehrfach sicher erinnert</p>
                         <div className="topic-progress" role="progressbar" aria-label={`${chapter.title}: ${mastered} von ${items.length} Lernzielen sicher`} aria-valuemin={0} aria-valuemax={items.length} aria-valuenow={mastered}>
-                          <span style={{ width: `${percent}%` }} />
+                          <span style={{ width: `${mastered / items.length * 100}%` }} />
                         </div>
                         <ul className="section-progress-list">
-                          {sections.map((section) => {
-                            const sectionQuestions = items.filter((question) => (question.section || question.questionType) === section);
+                          {sections.map(([sectionKey, sectionLabel]) => {
+                            const sectionQuestions = items.filter((question) => sectionKeyForQuestion(question) === sectionKey);
                             const sectionMastered = sectionQuestions.filter((question) =>
                               scheduleModes(question).some((mode) => isKnown(question, mode)),
                             ).length;
-                            return <li key={section}><span>{section}</span><span>{sectionMastered}/{sectionQuestions.length} sicher</span></li>;
+                            return <li key={sectionKey}><span>{sectionLabel}</span><span>{sectionMastered}/{sectionQuestions.length} sicher</span></li>;
                           })}
                         </ul>
                       </>
@@ -1603,12 +1698,20 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
                     )}
                     <div className="topic-card-footer">
                       <span>{items.length ? `${sections.length} Abschnitte` : "Noch keine Fragen für dieses Kapitel"}</span>
-                      <button className="button secondary" onClick={() => openTopic(chapter.title)}>Kapitel ansehen <span aria-hidden="true">→</span></button>
+                      <button className="button secondary" onClick={() => openTopic(chapter.id ?? chapter.title)}>Kapitel ansehen <span aria-hidden="true">→</span></button>
                     </div>
                   </article>
                 );
               })}
             </div>
+            {visibleUnassignedQuestions.length > 0 && (
+              <section className="empty-panel" aria-labelledby="unassigned-topic-title">
+                <span className="eyebrow">Kapitelzuordnung offen</span>
+                <h2 id="unassigned-topic-title">Nicht eindeutig zugeordnet</h2>
+                <p>{visibleUnassignedQuestions.length} Lerninhalte konnten keinem Kapitel sicher zugeordnet werden. Sie bleiben erhalten und können hier gezielt gelernt werden; es wurde keine Zuordnung anhand einer möglicherweise veralteten Kapitelnummer erfunden.</p>
+                <button className="button secondary" onClick={() => openTopic(unassignedTopic)}>Lerninhalte anzeigen <span aria-hidden="true">→</span></button>
+              </section>
+            )}
             {normalizedSearch && chapterCatalog.every((chapter) =>
               !chapter.title.toLocaleLowerCase("de").includes(normalizedSearch) && topicQuestions(chapter).length === 0,
             ) && <section className="empty-panel"><h2>Keine Treffer</h2><p>Ändere den Suchbegriff, um Kapitel oder Lerninhalte anzuzeigen.</p></section>}
@@ -1667,7 +1770,10 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
                   </fieldset>
                   <fieldset className="choice-group">
                     <legend>Themen</legend>
-                    {availableTopics.length ? availableTopics.map((topic) => <label className="check-option" key={topic}><input type="checkbox" checked={progress.sessionPreferences.topics.includes(topic)} onChange={() => updateSessionPreferences({ topics: progress.sessionPreferences.topics.includes(topic) ? progress.sessionPreferences.topics.filter((value) => value !== topic) : [...progress.sessionPreferences.topics, topic] })} /><span>{topic}</span></label>) : <p>Für die vorhandenen Fragen ist noch kein geprüftes Thema zugeordnet.</p>}
+                    {availableTopics.length ? availableTopics.map((topic) => {
+                      const selected = selectedChapterIds(progress.sessionPreferences.topics).includes(topic.id ?? "");
+                      return <label className="check-option" key={topic.id ?? topic.number}><input type="checkbox" checked={selected} onChange={() => updateSessionPreferences({ topics: selected ? selectedChapterIds(progress.sessionPreferences.topics).filter((id) => id !== topic.id) : [...selectedChapterIds(progress.sessionPreferences.topics), topic.id ?? topic.title] })} /><span>{topic.number}. {topic.title}</span></label>;
+                    }) : <p>Für die vorhandenen Fragen ist noch kein geprüftes Thema zugeordnet.</p>}
                     {progress.sessionPreferences.topics.length > 0 && <button className="button secondary" onClick={() => updateSessionPreferences({ topics: [] })}>Alle Themen verwenden</button>}
                   </fieldset>
                   <fieldset className="choice-group limit-choice"><legend>Umfang festlegen</legend>
@@ -1699,7 +1805,10 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
               ) : (
                 <>
                   <fieldset className="choice-group"><legend>Themen</legend>
-                    {availableTopics.map((topic) => <label className="check-option" key={topic}><input type="checkbox" checked={progress.sessionPreferences.examTopics.includes(topic)} onChange={() => updateSessionPreferences({ examTopics: progress.sessionPreferences.examTopics.includes(topic) ? progress.sessionPreferences.examTopics.filter((value) => value !== topic) : [...progress.sessionPreferences.examTopics, topic] })} /><span>{topic}</span></label>)}
+                    {availableTopics.map((topic) => {
+                      const selected = selectedChapterIds(progress.sessionPreferences.examTopics).includes(topic.id ?? "");
+                      return <label className="check-option" key={topic.id ?? topic.number}><input type="checkbox" checked={selected} onChange={() => updateSessionPreferences({ examTopics: selected ? selectedChapterIds(progress.sessionPreferences.examTopics).filter((id) => id !== topic.id) : [...selectedChapterIds(progress.sessionPreferences.examTopics), topic.id ?? topic.title] })} /><span>{topic.number}. {topic.title}</span></label>;
+                    })}
                     {progress.sessionPreferences.examTopics.length > 0 && <button className="button secondary" onClick={() => updateSessionPreferences({ examTopics: [] })}>Alle Themen verwenden</button>}
                   </fieldset>
                   <div className="setup-fields">
@@ -1760,11 +1869,15 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
 
         {(view === "learn" && chapterFilter !== "Alle Themen") && (
           <section className="chapter-focus">
-            <span className="eyebrow">Kapitelansicht</span>
-            <h2>{chapterFilter}</h2>
-            <p>{usableQuestions.some((question) => chapterForQuestion(question) === chapterFilter)
+            <span className="eyebrow">{chapterFilter === unassignedTopic ? "Kapitelzuordnung offen" : "Kapitelansicht"}</span>
+            <h2>{chapterFilter === unassignedTopic
+              ? "Nicht eindeutig zugeordnet"
+              : chapterCatalog.find((chapter) => chapter.id === chapterFilter)?.title ?? chapterFilter}</h2>
+            <p>{chapterFilter === unassignedTopic
+              ? "Diese erhaltenen Lerninhalte haben keine sichere Kapitel-ID. Ähnliche oder doppelte Kapitelnamen und frühere Kapitelnummern reichen nicht für eine verlässliche Zuordnung."
+              : usableQuestions.some((question) => chapterIdForQuestion(question) === chapterFilter)
               ? "Die folgenden Lernziele, Zusammenfassungen und Begriffe stammen ausschließlich aus belegten Einträgen. Die Folienangaben erscheinen direkt an der Frage."
-              : `Für ${chapterFilter} liegen noch keine am Original-Foliensatz geprüften Lernziele oder Zusammenfassungen vor. Prüfe Kapitelname und Foliengliederung an der Originalquelle außerhalb der App.`}</p>
+              : `Für ${chapterCatalog.find((chapter) => chapter.id === chapterFilter)?.title ?? chapterFilter} liegen noch keine am Original-Foliensatz geprüften Lernziele oder Zusammenfassungen vor. Prüfe Kapitelname und Foliengliederung an der Originalquelle außerhalb der App.`}</p>
           </section>
         )}
 
@@ -1817,7 +1930,7 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
                   const answer = unfinishedSession.answers[item.questionId];
                   return <article className="saved-card" key={item.questionId}><h3>{question.prompt}</h3><p>Deine Antwort: {answer ? question.options?.[answer.selectedOption] : "Nicht beantwortet"}</p><p>Richtige Antwort: {question.options?.[question.correctOption ?? -1]}</p>{question.explanation && <p>{question.explanation}</p>}<SourceNote question={question} /></article>;
                 })}<button className="button reveal-button" onClick={() => startExam(missed.map((item) => item.questionId), true)}>Verfehlte Fragen erneut prüfen</button></> : <p className="schedule-explanation">Keine verfehlten Fragen. Gut gemacht.</p>}
-                <button className="button secondary" onClick={() => { setProgress((previous) => ({ ...previous, unfinishedSession: null })); setView("overview"); }}>Zum Lernpfad</button>
+                <button className="button secondary" onClick={() => { if (setProgress(abandonUnfinishedSession)) setView("overview"); }}>Zum Lernpfad</button>
               </>;
             })()}
           </section>
@@ -1865,7 +1978,7 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
               </p>
             )}
             <section className="filters" aria-label="Inhalte filtern">
-              <label><span>Thema</span><select value={chapterFilter} onChange={(event) => setChapterFilter(event.target.value)}><option>Alle Themen</option>{chapters.map((chapter) => <option key={chapter}>{chapter}</option>)}</select></label>
+              <label><span>Thema</span><select value={chapterFilter} onChange={(event) => setChapterFilter(event.target.value)}><option>Alle Themen</option>{chapters.map((chapter) => <option key={chapter.id ?? chapter.number} value={chapter.id ?? chapter.title}>{chapter.number}. {chapter.title}</option>)}{unassignedQuestions.length > 0 && <option value={unassignedTopic}>Nicht eindeutig zugeordnet ({unassignedQuestions.length})</option>}</select></label>
               <label><span>Fragetyp</span><select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}><option>Alle Fragetypen</option>{questionTypes.map((type) => <option key={type}>{type}</option>)}</select></label>
               <span className="filter-hint">Suche und Filter gelten gemeinsam.</span>
             </section>
@@ -2013,6 +2126,46 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
               <article className="stat-card"><span>Später geplant</span><strong>{plannedCount}</strong><small>modusbezogene Wiederholungen</small></article>
               <article className="stat-card"><span>Unsicher / falsch</span><strong>{uncertainItems.length}</strong><small>in der Fehlerliste</small></article>
             </section>
+            <section className="next-step-panel progress-guidance" aria-labelledby="progress-guidance-title">
+              <div>
+                <span className="eyebrow">Nächste sinnvolle Schritte</span>
+                <h2 id="progress-guidance-title">Was braucht gerade Übung?</h2>
+                {dueItems.length > 0 ? (
+                  <p>{dueItems.length} fällige Wiederholungen warten. Beginne damit, bevor du neue Themen vertiefst.</p>
+                ) : (
+                  <p>Es sind aktuell keine Wiederholungen fällig.</p>
+                )}
+              </div>
+              {dueItems.length > 0 && <button className="button reveal-button" onClick={() => changeView("review")}>Fällige Inhalte öffnen <span aria-hidden="true">→</span></button>}
+              {topicAttention.length > 0 ? (
+                <ul className="section-progress-list">
+                  {topicAttention.slice(0, 3).map((topic) => {
+                    const title = topic.topicId === unassignedTopic
+                      ? "Nicht eindeutig zugeordnet"
+                      : chapterCatalog.find((chapter) => chapter.id === topic.topicId)?.title ?? "Kapitel";
+                    const details = [
+                      topic.markedForReview ? `${topic.markedForReview} markiert` : "",
+                      topic.repeatedMistakes ? `${topic.repeatedMistakes} mehrfach falsch` : "",
+                      topic.confidentErrors ? `${topic.confidentErrors} zuletzt selbstsicher falsch` : "",
+                    ].filter(Boolean).join(" · ");
+                    return (
+                      <li key={topic.topicId}>
+                        <span><strong>{title}</strong><small>{details}</small></span>
+                        <button className="button secondary" onClick={() => openTopic(topic.topicId)}>Üben</button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              ) : (
+                <p>Noch keine Themen mit markierten oder wiederholt falsch beantworteten Inhalten.</p>
+              )}
+              {(repeatedMistakeCount > 0 || confidentErrorCount > 0) && (
+                <p className="setup-hint">
+                  {repeatedMistakeCount > 0 && `${repeatedMistakeCount} Inhalte wurden in mehreren Lernsitzungen falsch beantwortet. `}
+                  {confidentErrorCount > 0 && `${confidentErrorCount} zuletzt falsch beantwortete Inhalte waren mit hoher Sicherheit markiert.`}
+                </p>
+              )}
+            </section>
             <div className="progress-history-link">
               <p>Deine abgeschlossenen Lern- und Prüfungssitzungen bleiben vom Beherrschungsstatus getrennt.</p>
               <button className="button secondary" onClick={() => changeView("history")}>Lernverlauf öffnen</button>
@@ -2035,35 +2188,49 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
             <section className="section-heading"><div><span className="eyebrow">Kapitel und Abschnitte</span><h2>Dein Lernstand</h2></div></section>
             <div className="progress-topic-list">
               {chapterCatalog.map((chapter) => {
-                const items = usableQuestions.filter((question) => chapterForQuestion(question) === chapter.title);
+                const items = usableQuestions.filter((question) => chapterIdForQuestion(question) === chapter.id);
                 const mastered = items.filter((question) =>
                   scheduleModes(question).some((mode) => isKnown(question, mode)),
                 ).length;
-                const sections = [...new Set(items.map((question) => question.section || question.questionType))];
+                const sections = [...new Map(items.map((question) => [
+                  sectionKeyForQuestion(question),
+                  sectionLabelForQuestion(question),
+                ] as const))];
                 return (
-                  <article className="progress-topic" key={chapter.number}>
+                  <article className="progress-topic" key={chapter.id ?? chapter.number}>
                     <div className="progress-topic-detail">
-                      <h3>{chapter.title}</h3>
+                      <h3>{chapter.number}. {chapter.title}</h3>
                       {items.length ? (
                         <>
                           <p>{mastered} von {items.length} Lernzielen zweimal sicher erinnert</p>
                           <ul className="section-progress-list">
-                            {sections.map((section) => {
-                              const sectionQuestions = items.filter((question) => (question.section || question.questionType) === section);
+                            {sections.map(([sectionKey, sectionLabel]) => {
+                              const sectionQuestions = items.filter((question) => sectionKeyForQuestion(question) === sectionKey);
                               const sectionMastered = sectionQuestions.filter((question) =>
                                 scheduleModes(question).some((mode) => isKnown(question, mode)),
                               ).length;
-                              return <li key={section}><span>{section}</span><span>{sectionMastered}/{sectionQuestions.length} sicher</span></li>;
+                              return <li key={sectionKey}><span>{sectionLabel}</span><span>{sectionMastered}/{sectionQuestions.length} sicher</span></li>;
                             })}
                           </ul>
                         </>
                       ) : <p>Noch keine belegten Lerninhalte hinterlegt.</p>}
                     </div>
                     <div className="topic-progress" role="progressbar" aria-label={`${chapter.title}: ${mastered} von ${items.length} Lernzielen sicher`} aria-valuemin={0} aria-valuemax={items.length || 1} aria-valuenow={mastered}><span style={{ width: `${items.length ? mastered / items.length * 100 : 0}%` }} /></div>
-                    <span className="topic-progress-label">{items.length ? Math.round(mastered / items.length * 100) : "—"}</span>
+                    <span className="topic-progress-label">{items.length ? `${mastered}/${items.length} sicher` : "Noch leer"}</span>
                   </article>
                 );
               })}
+              {unassignedQuestions.length > 0 && (
+                <article className="progress-topic">
+                  <div className="progress-topic-detail">
+                    <h3>Nicht eindeutig zugeordnet</h3>
+                    <p>{unassignedQuestions.filter((question) =>
+                      scheduleModes(question).some((mode) => isKnown(question, mode)),
+                    ).length} von {unassignedQuestions.length} Lerninhalten zweimal sicher erinnert</p>
+                    <button className="button secondary" onClick={() => openTopic(unassignedTopic)}>Lerninhalte prüfen <span aria-hidden="true">→</span></button>
+                  </div>
+                </article>
+              )}
             </div>
             <section className="next-step-panel">
             <div><span className="eyebrow">Wiederholungsrhythmus</span><h2>Einfache, nachvollziehbare Wiederholungsplanung</h2><p>Sichere Antworten führen zu steigenden lokalen Kalenderabständen; falsche oder unsichere Antworten werden am nächsten Tag wieder fällig. Eine niedrige Sicherheit verkürzt auch bei richtiger Antwort auf einen Tag. Als beherrscht zählen Inhalte erst nach zwei sicheren, fälligen Wiederholungen. Das ist eine praktische Planungshilfe, keine Behauptung eines einzig optimalen Intervalls.</p></div>
@@ -2096,16 +2263,18 @@ function CourseApp({ course, progress, setProgress, onCourseChange, onBack, save
             {contentPreview && (
               <section className="package-preview" aria-labelledby="package-preview-title">
                 <span className="eyebrow">Vorschau · noch nicht übernommen</span>
-                <h3 id="package-preview-title">{contentPreview.questions.length} Lerninhalte für {course.name}</h3>
+                <h3 id="package-preview-title">Paket für {course.name}</h3>
                 <div className="overview-stats">
+                  <article className="stat-card"><span>Kapitel</span><strong>{contentPreview.chapters.length}</strong></article>
                   <article className="stat-card"><span>Lernkarten</span><strong>{contentPreview.flashcardCount}</strong></article>
                   <article className="stat-card"><span>Quizfragen</span><strong>{contentPreview.quizCount}</strong></article>
-                  <article className="stat-card"><span>Kapitel</span><strong>{contentPreview.chapters.length}</strong></article>
+                  <article className="stat-card"><span>Quellen</span><strong>{contentPreview.materialNames.length}</strong></article>
                 </div>
-                <h4>Kapitel und Abschnitte</h4>
+                <p>{contentPreview.questions.length} belegte Lerninhalte · Quellen: {contentPreview.materialNames.join(", ")}</p>
+                <h4>Kapitel</h4>
                 <ul className="package-list">{contentPreview.chapters.map((chapter) => <li key={chapter.id}><strong>{chapter.title}</strong>{chapter.sections.length > 0 && <span>{chapter.sections.map((section) => section.title).join(" · ")}</span>}</li>)}</ul>
-                <h4>Im Paket angegebene Quellen und Seiten</h4>
-                <ul className="package-list">{contentPreview.questions.map((question) => <li key={question.id}><span>{question.prompt}</span><small>{question.sourceFileName} · S. {question.sourcePages.join(", ")}</small></li>)}</ul>
+                <h4>Warnhinweise</h4>
+                <ul className="package-list">{contentPreview.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>
                 <div className="data-actions">
                   <button className="button reveal-button" onClick={confirmContentImport}>Import bestätigen</button>
                   <button className="button secondary" onClick={() => { setContentPreview(null); setContentMessage("Import verworfen. Es wurden keine Inhalte geändert."); }}>Abbrechen</button>
